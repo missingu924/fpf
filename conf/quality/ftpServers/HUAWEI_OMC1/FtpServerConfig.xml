@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="gb2312"?>
+<Config version="1.0">		
+	<!-- 华为 -->
+	<ftpServer name="HUAWEI-OMC1">
+		<!--FTP连接基本信息-->
+		<ip>127.0.0.1</ip>
+		<port>21</port>
+		<user>lexftp</user>
+		<password>lexftp</password>
+		<dir>/huawei-omc1</dir>
+		<!--filter参数仅在下载时起作用，上传时无效-->
+		<filter></filter>	
+	</ftpServer>
+</Config>

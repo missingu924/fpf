@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="gb2312"?>
+<Config version="1.0">		
+	<!-- 华为 -->
+	<ftpServer name="JN_HUAWEI_OMC">
+		<!--FTP连接基本信息-->
+		<ip>10.18.1.26</ip>
+		<port>21</port>
+		<user>oracle</user>
+		<password>oracle123</password>
+		<dir>/home/oracle/wuyg/td-mr-xml</dir>
+		<!--filter参数仅在下载时起作用，上传时无效-->
+		<filter>*MRS*.gz</filter>		
+		<!--storedir参数在下载时请不要设置，仅在上传时设置-->
+		<!--storedir>D:/workspace/hnnwom/src</storedir-->
+	</ftpServer>
+</Config>

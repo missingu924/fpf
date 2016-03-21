@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="gb2312"?>
+<!DOCTYPE digester-rules PUBLIC "-//Jakarta Apache //DTD digester-rules XML V1.0//EN" "digester-rules.dtd">
+<digester-rules>
+	<pattern value="Config">
+		<object-create-rule classname="com.inspur.ftp.obj.FtpServerConfig"/>
+		<set-properties-rule/>
+		<pattern value="ftpServer">
+			<object-create-rule classname="com.inspur.ftp.obj.FtpServer"/>
+			<set-properties-rule/>
+			<bean-property-setter-rule pattern="ip"/>
+			<bean-property-setter-rule pattern="port"/>
+			<bean-property-setter-rule pattern="user"/>
+			<bean-property-setter-rule pattern="password"/>
+			<bean-property-setter-rule pattern="dir"/>
+			<bean-property-setter-rule pattern="filter"/>
+			<bean-property-setter-rule pattern="delete"/>
+			<bean-property-setter-rule pattern="storedir"/>
+			<set-next-rule methodname="addFtpServer" paramtype="com.inspur.ftp.obj.FtpServer"/>
+		</pattern>
+	</pattern>
+</digester-rules>

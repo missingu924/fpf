@@ -1,0 +1,630 @@
+package com.inspur.ftpparserframework;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.rmi.Naming;
+import java.rmi.registry.LocateRegistry;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import org.apache.log4j.Logger;
+
+import com.inspur.ftpparserframework.config.ConfigReader;
+import com.inspur.ftpparserframework.extend.DefaultTempFileCleaner;
+import com.inspur.ftpparserframework.extend.IFilePretreater;
+import com.inspur.ftpparserframework.extend.ItempFileCleaner;
+import com.inspur.ftpparserframework.ftp.FtpThread;
+import com.inspur.ftpparserframework.ftp.FtpThreadTimeoutChecker;
+import com.inspur.ftpparserframework.ftp.obj.FtpServer;
+import com.inspur.ftpparserframework.ftp.obj.FtpServerConfig;
+import com.inspur.ftpparserframework.parser.ParseThread;
+import com.inspur.ftpparserframework.rmi.IStatusReporter;
+import com.inspur.ftpparserframework.rmi.StatusReporterImpl;
+import com.inspur.ftpparserframework.util.Constant;
+import com.inspur.ftpparserframework.util.DigesterHelper;
+import com.inspur.ftpparserframework.util.StringUtil;
+import com.inspur.ftpparserframework.util.XMLFactory;
+import com.inspur.meta.fpf.rmi.FpfRmiImpl;
+import com.inspur.meta.fpf.rmi.IFpfRmi;
+import com.inspur.meta.fpf.rmi.pojo.DBConf;
+import com.inspur.meta.fpf.rmi.pojo.DBInfo;
+import com.inspur.meta.fpf.rmi.pojo.TaskPublishConf;
+import com.inspur.meta.fpf.rmi.pojo.TaskPublishConfInfo;
+
+/**
+ * FPF主程序，用于启动采集及解析进程。<br/> <br/> 命令说明: ./startup.sh [-ftp y|n] [-parse y|n] [-input inputDir] [-server svr1,svr2,svr3]
+ * [-debug y|n]<br/> <br/>
+ * 
+ * 该框架是用于实现ftp文件下载及解析入库的调度框架。<br/> <br/>
+ * 
+ * 命令选项解释:<br/> <br/>
+ * 
+ * -h 帮助<br/> <br/>
+ * 
+ * -ftp 可选项。是否启动FTP下载 (y 是|n 否，默认为n否)。<br/> <br/>
+ * 
+ * -parse 可选项。是否启动文件解析(y 是|n 否，默认为n否)。<br/> <br/>
+ * 
+ * -server 可选项。本次需要采集和解析的服务器信息,多个服务器用半角逗号隔开，不设置该参数则默认处理所有服务器的数据。<br/> <br/>
+ * 
+ * -input 可选项。待解析文件路径(默认为程序根目录下的../data/input目录)。<br/> <br/>
+ * 
+ * -debug 可选项。是否调试状态(y 是|n 否，默认为n否),启动调试状态后解析过程中产生的中间文件将不会删除。<br/> <br/>
+ * 
+ * @author 武玉刚
+ * 
+ */
+public class Main
+{
+	private static Logger log = Logger.getLogger(Main.class);
+
+	/**
+	 * 是否启动FTP文件采集(y 是|n 否，默认为n否)。
+	 */
+	public static String ftp = "n";
+	/**
+	 * 是否启动文件解析(y 是|n 否，默认为n否)
+	 */
+	public static String parse = "n";
+	/**
+	 * RMI端口号
+	 */
+	public static int rmiport = -1;
+	/**
+	 * 待解析文件所在目录
+	 */
+	public static String input = "";
+	/**
+	 * 实例启动时间
+	 */
+	public static Date startTime = new Date();
+	/**
+	 * 实例通过命令和行传递进来的参数列表
+	 */
+	public static Map<String, Object> argParamMap = new HashMap<String, Object>();
+	/**
+	 * ftp采集轮询间隔时间,单位秒
+	 */
+	public static long ftpScanInterval;
+	/**
+	 * ftp采集最近多长时间内生成的文件,单位秒
+	 */
+	public static long ftpFileLastModifyTime;
+	/**
+	 * ftp采集线程超时时间,单位秒
+	 */
+	public static long ftpTimeOut;
+	/**
+	 * 解析线程池最大线程数
+	 */
+	public static int parserThreadpoolSize;
+	/**
+	 * 文件解析轮询扫描间隔时间,单位秒
+	 */
+	public static long parserScanInterval;
+	/**
+	 * 从命令行输入的FTP服务器名，多个FTP服务器名之间用逗号分隔
+	 */
+	public static String serverStr = null;
+
+	private static FtpThreadTimeoutChecker checker;
+	/**
+	 * FTP服务器列表
+	 */
+	public static List<String> servers = new ArrayList<String>();
+
+	public static Map<String, TaskPublishConfInfo> taskPublishConfInfoMap = new HashMap<String, TaskPublishConfInfo>();
+
+	private static void usage()
+	{
+		System.out
+				.println("命令说明: ./startup.sh [-ftp y|n] [-parse y|n] [-rmiport portNo][-input inputDir] [-server svr1,svr2,svr3] [-debug y|n]");
+	}
+
+	private static void help()
+	{
+		usage();
+		System.out.println("\n该框架是用于实现ftp文件下载及解析入库的调度框架。");
+		System.out.println("\n命令选项解释:");
+		System.out.println("\n\t-h            帮助");
+		System.out.println("\n\t-ftp          可选项。是否启动FTP下载  (y 是|n 否，默认为n否)。");
+		System.out.println("\n\t-parse        可选项。是否启动文件解析(y 是|n 否，默认为n否)。");
+		System.out.println("\n\t-rmiport      可选项。启动RMI服务所需的端口号，如果不指定则不启动RMI服务。");
+		System.out.println("\n\t-server       可选项。本次需要采集和解析的服务器信息,多个服务器用半角逗号隔开，不设置该参数则默认处理所有服务器的数据。");
+		System.out.println("\n\t-input        可选项。待解析文件路径(默认为程序根目录下的../data/input目录)。");
+		System.out.println("\n\t-debug        可选项。是否调试状态(y 是|n 否，默认为n否),启动调试状态后解析过程中产生的中间文件将不会删除。");
+
+		System.exit(-1);
+	}
+
+	private static void setGlobalProperties()
+	{
+		String key = "javax.xml.transform.TransformerFactory";
+		String value = "org.apache.xalan.xsltc.trax.TransformerFactoryImpl";
+		Properties props = System.getProperties();
+		props.put(key, value);
+		System.setProperties(props);
+	}
+
+	public static void main(String[] args)
+	{
+
+		// if (!SignProvider.isLicense())
+		// {
+		// return;
+		// }
+		try
+		{
+			if (args.length > 0)
+			{
+				// 1、获取命令行参数
+				getParameters(args);
+				setGlobalProperties();
+				if (serverStr == null)
+				{
+					log.info("server参数未指定，处理所有server的数据");
+				} else
+				{
+					log.info("server参数已指定，处理" + serverStr + "的数据");
+				}
+
+				// 2、启动远程RMI接口
+				if (rmiport > 0)
+				{
+					startStatusReporterServer();
+				}
+
+				// 3、启动FTP文件下载
+				startFtpDownload();
+
+				// 4、启动文件解析
+				startParser();
+			} else
+			{
+				help();
+			}
+		} catch (Exception ex)
+		{
+			ex.printStackTrace();
+		}
+	}
+
+	private static void startStatusReporterServer() throws Exception
+	{
+		// 创建一个远程对象
+		IStatusReporter RStatusReporter = new StatusReporterImpl();
+		// 本地主机上的远程对象注册表Registry的实例，并指定端口为port输入端口，这一步必不可少（Java默认端口是1099），必不可缺的一步，缺少注册表创建，则无法绑定对象到远程注册表上
+		LocateRegistry.createRegistry(rmiport);
+		// 把远程对象注册到RMI注册服务器上，并命名为RStatusReporter
+		Naming.bind("rmi://localhost:" + rmiport + "/" + IStatusReporter.RMI_NAME, RStatusReporter);
+		IFpfRmi rQualityManager = new FpfRmiImpl();
+		Naming.bind("rmi://localhost:" + rmiport + "/" + IFpfRmi.RMI_NAME, rQualityManager);
+	}
+
+	private static void startParser() throws Exception, InterruptedException
+	{
+		if ("Y".equalsIgnoreCase(parse))
+		{
+			log.info("====================文件解析线程启动====================");
+			File dir = Constant.DATA_INPUT_DIR;
+			if (StringUtil.isEmpty(input))
+			{
+				if (!dir.exists())
+				{
+					dir.mkdirs();
+				}
+			} else
+			{
+				dir = new File(input);
+			}
+
+			// 1、构造解析线程池
+			parserThreadpoolSize = 0;
+			try
+			{
+				parserThreadpoolSize = Integer.parseInt(ConfigReader.getProperties("parser.threadpool"));
+				log.info("SystemConfig.xml配置的解析线程池最大线程数(parser.threadpool):" + parserThreadpoolSize);
+			} catch (Exception e)
+			{
+				log.info("SystemConfig.xml未配置解析线程池最大线程数(parser.threadpool),系统采用默认设置:"
+						+ Constant.DEFAULT_THREAD_POLL_SIZE);
+				parserThreadpoolSize = Constant.DEFAULT_THREAD_POLL_SIZE;
+			}
+
+			while (true)
+			{
+				// 2、清理解析过程中产生的临时文件，避免程序重启时一些过程文件被解析，引发错误
+				String tempFileCleanerClass = ConfigReader.getProperties("extend.tempFileCleaner");
+				if (!StringUtil.isEmpty(tempFileCleanerClass))
+				{
+					log.info("SystemConfig.xml配置的临时文件清理器 (extend.tempFileCleaner):" + tempFileCleanerClass);
+				} else
+				{
+					tempFileCleanerClass = DefaultTempFileCleaner.class.getName();
+					log.warn("SystemConfig.xml未配置临时文件清理器(extend.tempFileCleaner),请检查是否设置,系统使用默认的临时文件清理器:"
+							+ tempFileCleanerClass);
+				}
+				ItempFileCleaner cleaner = (ItempFileCleaner) Thread.currentThread().getContextClassLoader().loadClass(
+						tempFileCleanerClass).newInstance();
+				cleaner.clean(dir);
+
+				// 3、启动解析
+				ExecutorService pool = Executors.newFixedThreadPool(parserThreadpoolSize);
+				parseAndLoad(pool, dir);
+				// modify by lex 2014-4-2 start
+				// 文件进入解析线程前全局处理
+				String filePretreaterClz = ConfigReader.getProperties("extend.filePretreater");
+				if (filePretreaterClz != null)
+				{
+					IFilePretreater filePretreater = (IFilePretreater) Thread.currentThread().getContextClassLoader()
+							.loadClass(filePretreaterClz.trim()).newInstance();
+					filePretreater.setEnd();
+				}
+				// modify by lex 2014-4-2 end
+
+				pool.shutdown();
+				while (!pool.awaitTermination(1, TimeUnit.MILLISECONDS))
+					;
+
+				// 4、休眠
+				parserScanInterval = 0;
+				try
+				{
+					parserScanInterval = Integer.parseInt(ConfigReader.getProperties("parser.scanInterval"));
+					log.info("SystemConfig.xml配置的文件解析轮询扫描间隔时间(parser.scanInterval):" + parserScanInterval + "秒");
+				} catch (Exception e)
+				{
+					log.info("SystemConfig.xml未配置文件解析轮询扫描间隔时间(parser.scanInterval),系统采用默认设置:"
+							+ Constant.DEFAULT_PARSE_INTERVAL + "秒");
+					parserScanInterval = Constant.DEFAULT_PARSE_INTERVAL;
+				}
+				String loopScan = ConfigReader.getProperties("parser.loopScan");
+				if (loopScan != null && loopScan.equalsIgnoreCase("false"))
+				{
+					log.info("解析完成，退出解析");
+					break;
+				}
+				Thread.sleep(parserScanInterval * 1000l);
+			}
+		}
+	}
+
+	private static void startFtpDownload() throws Exception
+	{
+		if ("Y".equalsIgnoreCase(ftp))
+		{
+			log.info("====================FTP下载线程启动开始====================");
+			FtpServerConfig config = (FtpServerConfig) DigesterHelper.parseFromXmlFile(FtpServerConfig.class, Thread
+					.currentThread().getContextClassLoader().getResourceAsStream(Constant.FTP_SERVER_CONFIG_FILE));
+
+			checker = new FtpThreadTimeoutChecker(ftpTimeOut);// ftp 超时监控线程
+			List<FtpServer> ftpServerList = config.getFtpServerList();
+			for (int i = 0; i < ftpServerList.size(); i++)
+			{
+				FtpServer ftpServer = ftpServerList.get(i);
+
+				if (StringUtil.isEmpty(serverStr) || servers.contains(ftpServer.getName()))
+				{
+					FtpThread ftp = new FtpThread(ftpServer, ftpScanInterval, ftpFileLastModifyTime,
+							Constant.FTP_DOWNLOAD); // 启动ftp采集线程
+					ftp.start();
+					checker.check(ftp); // 纳入超时监控
+				}
+			}
+			// 数据质量处下发的配置文件信息 20130826 徐恩龙 start
+			File[] ftpConfDir = Constant.QUALITY_FTP_CONF_DIR.listFiles();
+			for (int i = 0; i < ftpConfDir.length; i++)
+			{
+				String publisth_task_id = ftpConfDir[i].getName();
+				String confdir = Constant.QUALITY_FTP_CONF_DIR.getCanonicalPath() + File.separator + publisth_task_id
+						+ File.separator + Constant.QUALITY_CONF;
+				File testFile = new File(confdir);
+				if (testFile.exists())
+				{
+					addorUpdateTask(publisth_task_id);
+				}
+			}
+			// 数据质量处下发的配置文件信息 20130826 徐恩龙 end
+			checker.start();
+
+			log.info("====================FTP下载线程启动完成,共启动" + ftpServerList.size() + "个下载线程====================");
+		}
+	}
+
+	private static void getParameters(String args[])
+	{
+		for (int i = 0; i < args.length; i++)
+		{
+			if (args[i].startsWith("-"))
+			{
+				if (i + 1 == args.length || args[i + 1].charAt(0) == '-')
+				{
+					help();
+				} else
+				{
+					String argName = args[i].replaceFirst("-", "");
+					if ("h".equals(argName) || "help".equals(argName))
+					{
+						help();
+					}
+
+					String argValue = args[++i];
+
+					if ("ftp".equals(argName))
+					{
+						ftp = argValue;
+					} else if ("parse".equals(argName))
+					{
+						parse = argValue;
+					} else if ("input".equals(argName))
+					{
+						input = argValue;
+					} else if ("server".equals(argName))
+					{
+						serverStr = argValue;
+					} else if ("rmiport".equals(argName))
+					{
+						rmiport = Integer.parseInt(argValue);
+					} else
+					{
+						argParamMap.put(argName, argValue);
+					}
+				}
+			}
+		}
+	}
+
+	/**
+	 * 解析数据文件
+	 * 
+	 * @param file
+	 * @throws Exception
+	 */
+	private static void parseAndLoad(ExecutorService pool, File file) throws Exception
+	{
+		if (file.isDirectory())
+		{
+			// 不解析备份文件夹下的文件
+			if (file.getName().equalsIgnoreCase("bak") || file.getName().equalsIgnoreCase("bad"))
+			{
+				return;
+			}
+
+			File[] files = file.listFiles();
+			if (files == null)
+			{
+				return;
+			}
+
+			for (int i = 0; i < files.length; i++)
+			{
+				parseAndLoad(pool, files[i]);
+			}
+		} else
+		{
+			boolean needParse = false;
+
+			if (!StringUtil.isEmpty(serverStr))// 如果输入了server信息，则只处理这些server的文件
+			{
+				for (int i = 0; i < servers.size(); i++)
+				{
+					if (file.getCanonicalPath().indexOf(servers.get(i)) >= 0)
+					{
+						needParse = true;
+						break;
+					}
+				}
+			} else
+			{
+				needParse = true;
+			}
+
+			if (needParse)
+			{
+				// 每个文件启动一个解析线程，必须为每一个线程构造一个单独的paramMap
+				Map<String, Object> threadSafeParamMap = new HashMap<String, Object>();
+				Iterator<String> iter = argParamMap.keySet().iterator();
+				while (iter.hasNext())
+				{
+					String key = iter.next();
+					threadSafeParamMap.put(key, argParamMap.get(key));
+				}
+				// modify by lex 2014-4-2 start
+				// 文件进入解析线程前全局处理
+				String filePretreaterClz = ConfigReader.getProperties("extend.filePretreater");
+				if (filePretreaterClz != null&&!filePretreaterClz.equals(""))
+				{
+					if (file.getName().endsWith(IFilePretreater.SUFFIX))
+					{// 文件已经是处理后的文件，进入解析线程
+						Thread parserThread = new ParseThread(file, threadSafeParamMap);
+						pool.execute(parserThread);
+					} else
+					{// 全局处理
+						IFilePretreater filePretreater = (IFilePretreater) Thread.currentThread()
+								.getContextClassLoader().loadClass(filePretreaterClz.trim()).newInstance();
+						File pretreatedFile = null;
+						try
+						{//add by lex 20140526 防止异常导致程序退出
+							pretreatedFile = filePretreater.filePretreater(file, threadSafeParamMap);
+						} catch (Exception e)
+						{
+							log.error(e.getMessage());
+							e.printStackTrace();
+						}
+						if (pretreatedFile != null)
+						{// 处理后的文件，进入解析线程
+							Thread parserThread = new ParseThread(pretreatedFile, threadSafeParamMap);
+							pool.execute(parserThread);
+						}
+					}
+				} else
+				{// 无需全局处理，直接进入解析线程
+					Thread parserThread = new ParseThread(file, threadSafeParamMap);
+					pool.execute(parserThread);
+				}
+				// modify by lex 2014-4-2 end
+
+				// Thread parserThread = new ParseThread(file, threadSafeParamMap);
+				// pool.execute(parserThread);
+			} else
+			{
+				log.debug(file.getCanonicalPath() + "不属于本次需要处理的服务器的文件，忽略。");
+			}
+		}
+	}
+
+	/**
+	 * 添加Task
+	 * 
+	 * @param publisth_task_id
+	 * @return
+	 * @throws Exception
+	 */
+	public static String addorUpdateTask(String publisth_task_id) throws Exception
+	{
+		// String returnJson = null;
+		Boolean success = false;
+		if ("Y".equalsIgnoreCase(ftp))
+		{
+			if (checker == null)
+			{
+				checker = new FtpThreadTimeoutChecker(ftpTimeOut);
+				checker.start();
+			}
+			InputStream fis = null;
+			try
+			{
+				TaskPublishConfInfo taskPublishConfInfo = new TaskPublishConfInfo();
+				taskPublishConfInfo.setPublisth_task_id(publisth_task_id);
+				// 1、获取任务对应的ftp和db编号
+				String confDir = Constant.QUALITY_FTP_CONF_DIR.getCanonicalPath() + File.separator + publisth_task_id
+						+ File.separator + Constant.QUALITY_CONF;
+				XMLFactory taskPublishConfFactory = new XMLFactory(TaskPublishConf.class);
+				fis = new FileInputStream(confDir);
+				TaskPublishConf taskPublishConf = taskPublishConfFactory.unmarshal(fis);
+				fis.close();
+				String ftp_id = taskPublishConf.getFtp_id();
+				String db_id = taskPublishConf.getDb_id();
+				// 2、根据ftp编号查找ftp信息并添加下载线程
+				String ftpServerConfigDir = Constant.QUALITY_FTP_CONF_FILE.getCanonicalPath();
+				FtpServerConfig config = (FtpServerConfig) DigesterHelper.parseFromXmlFile(FtpServerConfig.class,
+						ftpServerConfigDir);
+				List<FtpServer> ftpServerList = config.getFtpServerList();
+				for (int i = 0; i < ftpServerList.size(); i++)
+				{
+					FtpServer ftpServer = ftpServerList.get(i);
+					if (ftp_id.equals(ftpServer.getId()))
+					{
+						ftpServer.setTaskPublishId(publisth_task_id);
+						taskPublishConfInfo.setFtpServer(ftpServer);
+						checker.check(ftpServer); // 纳入超时监控
+						break;
+					}
+				}
+				// 3、根据db编号查找db信息并缓存以便解析时候使用
+				String dBConfDir = Constant.QUALITY_DB_CONF_FILE.getCanonicalPath();
+				XMLFactory dBConfFactory = new XMLFactory(DBConf.class);
+				fis = new FileInputStream(dBConfDir);
+				DBConf dBConf = dBConfFactory.unmarshal(fis);
+				fis.close();
+				List<DBInfo> dbinfos = dBConf.getdBInfos();
+				for (int i = 0; i < dbinfos.size(); i++)
+				{
+					DBInfo dBInfo = dbinfos.get(i);
+					if (db_id.equals(dBInfo.getId()))
+					{
+						taskPublishConfInfo.setDBInfo(dBInfo);
+						break;
+					}
+				}
+				taskPublishConfInfoMap.put(taskPublishConfInfo.getPublisth_task_id(), taskPublishConfInfo);
+				success = true;
+			} catch (Exception e)
+			{
+				success = false;
+				e.printStackTrace();
+				throw e;
+			} finally
+			{
+				if (fis != null)
+				{
+					try
+					{
+						fis.close();
+					} catch (IOException e)
+					{
+					}
+				}
+			}
+		} else
+		{
+			log.warn("未启动FTP下载功能，不能添加FTP下载服务!!!");
+			success = false;
+			throw new Exception("未启动FTP下载功能，不能添加FTP下载服务!!!");
+		}
+		return success.toString();
+	}
+
+	/**
+	 * 删除Task
+	 * 
+	 * @param publisth_task_name
+	 * @return
+	 * @throws Exception
+	 */
+	public static String delTask(String publisth_task_id)
+	{
+		TaskPublishConfInfo taskPublishConfInfo = taskPublishConfInfoMap.get(publisth_task_id);
+		checker.delFtp(taskPublishConfInfo.getFtpServer());
+		return "true";
+	}
+
+	// 提前初始化，便于其他地方使用。
+	static
+	{
+		ftpScanInterval = 0;
+		try
+		{
+			ftpScanInterval = Integer.parseInt(ConfigReader.getProperties("ftp.scanInterval"));
+			log.info("SystemConfig.xml配置的ftp轮询间隔时间(ftp.scanInterval):" + ftpScanInterval + "秒");
+		} catch (Exception e)
+		{
+			log.info("SystemConfig.xml未配置ftp轮询间隔时间(ftp.scanInterval),系统采用默认设置:" + Constant.DEFAULT_FTP_INTERVAL + "秒");
+			ftpScanInterval = Constant.DEFAULT_FTP_INTERVAL;
+		}
+
+		ftpFileLastModifyTime = 0;
+		try
+		{
+			ftpFileLastModifyTime = Long.parseLong(ConfigReader.getProperties("ftp.fileLastModifyTime"));
+			log.debug("SystemConfig.xml配置的FTP采集最近多长时间内生成的文件(ftp.fileLastModifyTime):" + ftpFileLastModifyTime + "秒");
+		} catch (Exception e)
+		{
+			log.info("SystemConfig.xml未配置FTP采集最近多长时间内生成的文件(ftp.fileLastModifyTime),系统采用默认设置:"
+					+ Constant.FTP_FILELASTMODIFYTIME_DEFAULT_VALUE + "秒");
+			ftpFileLastModifyTime = Constant.FTP_FILELASTMODIFYTIME_DEFAULT_VALUE;
+		}
+
+		ftpTimeOut = 0;
+		try
+		{
+			ftpTimeOut = Integer.parseInt(ConfigReader.getProperties("ftp.timeOut"));
+			log.info("SystemConfig.xml配置的ftp超时时间(ftp.timeOut):" + ftpTimeOut + "秒");
+		} catch (Exception e)
+		{
+			log.info("SystemConfig.xml未配置ftp超时时间(ftp.timeOut),系统采用默认设置:" + Constant.DEVAULT_FTP_TIME_OUT + "秒");
+			ftpTimeOut = Constant.DEVAULT_FTP_TIME_OUT;
+		}
+
+	}
+}

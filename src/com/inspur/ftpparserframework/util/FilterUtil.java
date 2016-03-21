@@ -1,0 +1,405 @@
+package com.inspur.ftpparserframework.util;
+
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
+import org.apache.log4j.Logger;
+
+import com.inspur.ftpparserframework.config.ConfigReader;
+import com.inspur.ftpparserframework.extend.IFileFilter;
+
+/**
+ * 过滤器工具类
+ * 
+ * @author 武玉刚
+ * 
+ */
+public class FilterUtil
+{
+	private static Logger log = Logger.getLogger(FilterUtil.class);
+	public static final String PREFIX_PARSE_SUCC = "parse_succ";// 记录解析成功的文件
+	public static final String PREFIX_PARSE_FAIL = "parse_fail";// 记录解析失败的文件
+	public static final String PREFIX_DOWNLOAD = "ftp_dl"; // 记录下载成功的文件
+	public static final String PREFIX_UPLOADLOAD = "ftp_ul"; // 记录上传成功的文件
+	public static final String PREFIX_DOWNLOAD_OLD = "ftp";// 兼容老版本，老版本没有上传功能所以没有区分dl和ul
+
+	/**
+	 * 判断文件是否需要解析
+	 * 
+	 * @param file
+	 * @return
+	 * @throws Exception
+	 */
+	public static synchronized boolean shouldParse(File file) throws Exception
+	{
+		// 1:如果文件在“今天已解析的文件”记录中已经存在，则不重复解析
+		// modify by wuyg 2013-01-17,去掉文件对文件记录表的检测。
+		// 因为文件处理完成后会转到bak目录下,而解析时是不处理bak目录下的文件的,因此不必要在这里做重复判断。
+		// 当需要解析的文件非常多的时候,此处频繁的打开和关闭文件是比较耗费时间的。
+
+		// if (recordContainsFile(file, PREFIX_PARSE_SUCC))
+		// return false;
+
+		// 2:文件的最后修改时间与当前时间相比至少大于5秒（避免文件在生成的过程中被处理）
+		if ((System.currentTimeMillis() - file.lastModified()) <= 5 * 1000l)
+		{
+			log.debug("文件过滤：" + file.getCanonicalPath() + "的最后修改时间与当前时间相比小于10秒,为避免文件生成过程中被解析,本次暂不处理");
+			return false;
+		}
+
+		// 3:如果文件大小为0，则不处理
+		if (file.length() == 0)
+		{
+			// log.debug("文件过滤：" + file.getCanonicalPath() + "文件大小为0,本次暂不处理");
+			// add by lex 20140520 start
+			if ((System.currentTimeMillis() - file.lastModified()) > 30 * 1000l)
+			{// 文件的最后修改时间与当前时间相比大于30秒,但文件大小为0，认为文件有问题，移除之
+				File badDir = new File(file.getParent() + "/bad/");
+				File badFile = new File(badDir, file.getName());
+				if (!badFile.getParentFile().exists())
+				{
+					badFile.getParentFile().mkdirs();
+				}
+				if (badFile.exists())
+				{
+					boolean isDelete = badFile.delete();
+					log.debug("bad目录存在同名文件，删除:" + isDelete);
+				}
+				boolean renameOk = file.renameTo(badFile);
+				log.debug("文件过滤：" + file.getCanonicalPath() + "文件大小为0且最后修改时间与当前时间相比大于30秒,移除到bad目录下:" + renameOk);
+			} else
+			{
+				log.debug("文件过滤：" + file.getCanonicalPath() + "文件大小为0,本次暂不处理");
+			}
+			// add by lex 20140520 end
+			return false;
+		}
+
+		// 4:以.tmp或.temp结尾的文件
+		if (file.getName().endsWith(".tmp") || file.getName().endsWith(".temp"))
+		{
+			log.debug("文件过滤：" + file.getCanonicalPath() + "以.tmp或.temp结尾,本次暂不处理");
+			return false;
+		}
+
+		// 5:外部程序如果需要增加新的条件，则可以通过实现shouldParseExtend方法来增加限制条件。
+		String fileFilterClass = ConfigReader.getProperties("extend.fileFilter");
+		if (!StringUtil.isEmpty(fileFilterClass))
+		{
+			log.debug(file.getCanonicalPath() + " 文件过滤程序为 " + fileFilterClass);
+
+			IFileFilter fileFilter = (IFileFilter) Thread.currentThread().getContextClassLoader().loadClass(
+					fileFilterClass).newInstance();
+			boolean shouldParse = fileFilter.shouldParseExtend(file);
+			if (!shouldParse)
+			{
+				log.debug("文件过滤：自定应过滤器" + fileFilterClass + "检测到文件" + file.getCanonicalPath() + "需过滤,本次暂不处理");
+			}
+			return shouldParse;
+		}
+
+		return true;
+	}
+
+	/**
+	 * 记录已经解析过的文件
+	 * 
+	 * @param file
+	 * @throws IOException
+	 */
+	public static synchronized void recordParsedSuccFile(File file) throws IOException
+	{
+		record(file.getCanonicalPath() + "-" + TimeUtil.date2str(file.lastModified(), "yyyyMMddHHmmss"),
+				PREFIX_PARSE_SUCC);
+	}
+
+	/**
+	 * 记录解析失败的文件
+	 * 
+	 * @param file
+	 * @throws IOException
+	 */
+	public static synchronized void recordParsedFailFile(File file) throws IOException
+	{
+		record(file.getCanonicalPath() + "-" + TimeUtil.date2str(file.lastModified(), "yyyyMMddHHmmss"),
+				PREFIX_PARSE_FAIL);
+	}
+
+	/**
+	 * 判断文件是否需要下载
+	 * 
+	 * @param file
+	 * @return
+	 * @throws Exception
+	 */
+	public static synchronized boolean shouldDownload(File file) throws Exception
+	{
+		return !recordContainsFile(file, PREFIX_DOWNLOAD);
+	}
+
+	/**
+	 * 判断文件是否需要补采
+	 * 
+	 * @param file
+	 * @return
+	 * @throws Exception
+	 */
+	public static synchronized boolean shouldReDownload(String recordInfo) throws Exception
+	{
+		File[] recordFiles = Constant.DATA_RECORD_DIR.listFiles();
+		if (recordFiles != null)
+		{
+			for (int i = 0; i < recordFiles.length; i++)
+			{
+				if ((recordFiles[i].getName().contains(PREFIX_DOWNLOAD) || recordFiles[i].getName().contains(
+						PREFIX_DOWNLOAD_OLD + "_"))
+						&& recordContainsFile(recordInfo, PREFIX_DOWNLOAD, recordFiles[i]))
+				{
+					return false;
+				}
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * 记录已经下载过的文件
+	 * 
+	 * @param file
+	 */
+	public static synchronized void recordDownloadedFile(String recordInfo)
+	{
+		record(recordInfo, PREFIX_DOWNLOAD);
+	}
+
+	/**
+	 * 判断文件是否需要上传
+	 * 
+	 * @param file
+	 * @return
+	 * @throws Exception
+	 */
+	public static synchronized boolean shouldUpload(File file) throws Exception
+	{
+		return !recordContainsFile(file, PREFIX_UPLOADLOAD);
+	}
+
+	/**
+	 * 记录已经上传过的文件
+	 * 
+	 * @param file
+	 * @throws IOException
+	 */
+	public static synchronized void recordUploadedFile(File file) throws IOException
+	{
+		record(file.getCanonicalPath() + "-" + TimeUtil.date2str(file.lastModified(), "yyyyMMddHHmmss"),
+				PREFIX_UPLOADLOAD);
+	}
+
+	private static synchronized void record(String recordInfo, String preFix)
+	{
+		PrintWriter pw = null;
+		FileWriter fw = null;
+		try
+		{
+			File recordFile = getRecordFile(preFix, 0);
+			fw = new FileWriter(recordFile, true);
+			pw = new PrintWriter(fw);
+			pw.println(TimeUtil.nowTime2str() + " " + recordInfo);
+		} catch (Exception e)
+		{
+			log.error(e.getMessage(), e);
+		} finally
+		{
+			try
+			{
+				if (pw != null)
+				{
+					pw.close();
+				}
+				if (fw != null)
+				{
+					fw.close();
+				}
+			} catch (Exception e)
+			{
+			}
+		}
+	}
+
+	public static synchronized boolean recordContainsFile(File file, String preFix) throws FileNotFoundException,
+			IOException
+	{
+		// 由于记录文件是每天一个，所有在进行检测是需要同时检测今天和昨天的记录文件，主要是避免在凌晨0点以后短时间内重复处理昨天已经处理过的问价
+
+		String recordInfo = file.getCanonicalPath() + "-" + TimeUtil.date2str(file.lastModified(), "yyyyMMddHHmmss");
+		File recordFileToday = getRecordFile(preFix, 0);// 今天的记录文件
+		if (recordContainsFile(recordInfo, preFix, recordFileToday))
+		{
+			return true;
+		}
+
+		File recordFileYestoday = getRecordFile(preFix, 1);// 昨天的记录文件
+		if (recordContainsFile(recordInfo, preFix, recordFileYestoday))
+		{
+			return true;
+		}
+
+		return false;
+	}
+
+	public static boolean recordContainsFile(String recordInfo, String preFix, File recordFile)
+			throws FileNotFoundException, IOException
+	{
+		BufferedReader bf = null;
+		FileReader fr = null;
+		try
+		{
+			fr = new FileReader(recordFile);
+			bf = new BufferedReader(fr);
+			String line = null;
+			while ((line = bf.readLine()) != null)
+			{
+				// String[] names = line.split("\\s+");//兼容老版本，老版本没有记录时间
+				String file = line.substring(10).trim();// modify by lex 20140620 不再兼容老版本，当文件名中有空格时原写法有问题
+				// for (int i = 0; i < names.length; i++)
+				// {
+
+				if (file.equalsIgnoreCase(recordInfo))// 格式如：2012-11-20 16:27:37
+				// /home/oracle/wuyg/td-mr-xml/data/input/DATANG/TD-SCDMA_MRS_DATANG_OMCR_905_20121120150000.xml
+				{
+					log.debug(preFix + "文件过滤：" + recordInfo + "已处理过,不再处理,请查看文件列表:" + recordFile.getCanonicalPath());
+					return true;
+				}
+				// }
+			}
+		} catch (Exception e)
+		{
+			log.error(e.getMessage(), e);
+		} finally
+		{
+			if (fr != null)
+			{
+				fr.close();
+			}
+			if (bf != null)
+			{
+				bf.close();
+			}
+		}
+		return false;
+	}
+
+	public static Set<String> getRecordFileList(String preFix) throws Exception
+	{
+		// 由于记录文件是每天一个，所有在进行检测是需要同时检测今天和昨天的记录文件，主要是避免在凌晨0点以后短时间内重复处理昨天已经处理过的问价
+		Set<String> files = new HashSet<String>();
+
+		File recordFileToday = getRecordFile(preFix, 0);// 今天的记录文件
+		files.addAll(getRecordFileList(recordFileToday));
+
+		File recordFileYestoday = getRecordFile(preFix, 1);// 昨天的记录文件
+		files.addAll(getRecordFileList(recordFileYestoday));
+
+		return files;
+	}
+
+	public static Set<String> getRecordFileList(File recordFile) throws Exception
+	{
+		Set<String> files = new HashSet<String>();
+		BufferedReader bf = null;
+		FileReader fr = null;
+		try
+		{
+			fr = new FileReader(recordFile);
+			bf = new BufferedReader(fr);
+			String line = null;
+			while ((line = bf.readLine()) != null)
+			{
+				// String[] names = line.split("\\s+");//兼容老版本，老版本没有记录时间
+				// files.add(names[names.length - 1]);
+				// 2014-06-20 01:22:11 D:\workspace\data\input\test\test3\*.*-20140619234500
+				String file = line.substring(19).trim();// modify by lex 20140620 不再兼容老版本，当文件名中有空格时原写法有问题
+				files.add(file);
+			}
+		} catch (Exception e)
+		{
+			log.error(e.getMessage(), e);
+		} finally
+		{
+			if (fr != null)
+			{
+				fr.close();
+			}
+			if (bf != null)
+			{
+				bf.close();
+			}
+		}
+		return files;
+	}
+
+	private static File getRecordFile(String preFix, int nDaysAgo)
+	{
+		try
+		{
+			String recordFileName = preFix + "_" + TimeUtil.date2str(TimeUtil.getDayBefore(nDaysAgo), "yyyyMMdd")
+					+ ".txt";
+
+			File recordFile = new File(Constant.DATA_RECORD_DIR, recordFileName);
+
+			if (!recordFile.getParentFile().exists())
+			{
+				recordFile.getParentFile().mkdirs();
+			}
+			if (!recordFile.exists())
+			{
+				recordFile.createNewFile();
+			}
+
+			return recordFile;
+		} catch (Exception e)
+		{
+			log.error(e.getMessage(), e);
+		}
+		return null;
+	}
+
+	public static void main(String[] args)
+	{
+		try
+		{
+			List<String> ll = new ArrayList<String>();
+			for (int i = 0; i < 30000; i++)
+			{
+				ll.add("ss");
+			}
+			long startTime = System.currentTimeMillis();
+			File s = new File("c:/a.txt");
+			for (int i = 0; i < 1000000; i++)
+			{
+				recordDownloadedFile(System.currentTimeMillis() + "");
+
+				shouldReDownload(System.currentTimeMillis() + "");
+				if (i % 100 == 0)
+				{
+					System.out.println(i + "==" + (System.currentTimeMillis() - startTime));
+				}
+			}
+
+		} catch (Exception e)
+		{
+			e.printStackTrace();
+		}
+	}
+}

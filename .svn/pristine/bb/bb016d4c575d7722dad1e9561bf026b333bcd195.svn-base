@@ -1,0 +1,28 @@
+package com.inspur.ftpparserframework.extend;
+
+import java.io.File;
+
+import org.apache.log4j.Logger;
+
+import com.inspur.ftpparserframework.log.obj.BasicInfo;
+
+/**
+ * 文件基本信息获取接口的默认实现，不做任何处理。
+ * @author 武玉刚
+ *
+ */
+public class DefaultBasicInfoParser implements IBasicInfoParser
+{
+	private Logger log = Logger.getLogger(this.getClass());
+
+
+//	@Override
+	public BasicInfo parseBasicInfo(File srcFile) throws Exception
+	{
+		// 默认实现，无任何业务逻辑。
+		log.info(srcFile.getCanonicalPath() + " 使用默认的基本信息解析程序，不做任何处理。");
+		
+		return new BasicInfo();
+	}
+
+}

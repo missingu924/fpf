@@ -1,0 +1,407 @@
+package com.inspur.ftpparserframework.transformator;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStream;
+import java.io.PrintWriter;
+import java.text.DecimalFormat;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import org.apache.log4j.Logger;
+import org.apache.poi.hssf.usermodel.HSSFWorkbook;
+import org.apache.poi.poifs.filesystem.OfficeXmlFileException;
+import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+
+import com.inspur.ftpparserframework.dbloader.DbLoaderUtil;
+import com.inspur.ftpparserframework.dbloader.obj.DbLoaderColumn;
+import com.inspur.ftpparserframework.dbloader.obj.DbLoaderTable;
+import com.inspur.ftpparserframework.exception.GetParameterException;
+import com.inspur.ftpparserframework.transformator.obj.excel2DbMap.ColumnInfo;
+import com.inspur.ftpparserframework.transformator.obj.excel2DbMap.ExcelInfo;
+import com.inspur.ftpparserframework.transformator.obj.excel2DbMap.SheetInfo;
+import com.inspur.ftpparserframework.util.Constant;
+import com.inspur.ftpparserframework.util.StringUtil;
+import com.inspur.ftpparserframework.util.XMLFactory;
+
+public class Excel2DbTransformator implements ITransformator
+{
+
+	public static final String EXCEL2DBMAPFILE = "__excel2DbMapFile";
+	private static Logger log = Logger.getLogger(Excel2DbTransformator.class);
+	public static String LINESEPARATOR = java.security.AccessController
+			.doPrivileged(new sun.security.action.GetPropertyAction("line.separator"));
+
+	@Override
+	public String getDestFileSuffix()
+	{
+		return "Excel2SimpleXml文件转换";
+	}
+
+	@Override
+	public String getTransformatorName()
+	{
+		return ".excel2xml";
+	}
+
+	@Override
+	public void transformat(File srcFile, File middleFile, File destFile, Map<String, Object> paramMap)
+			throws Exception
+	{
+		// 1、获取配置文件信息
+		Object excel2DbMapFile = paramMap.get(EXCEL2DBMAPFILE);
+		if (excel2DbMapFile == null)
+		{
+			throw new GetParameterException("无法获取" + EXCEL2DBMAPFILE + "参数值,该参数值用于指定" + getTransformatorName()
+					+ "的配置文件,对应的待处理文件为:" + middleFile.getCanonicalPath());
+		}
+		File xmlFile = new File(excel2DbMapFile.toString());
+		if (!xmlFile.exists())
+		{
+			throw new GetParameterException("未找到" + getTransformatorName() + "转换所需的" + EXCEL2DBMAPFILE + "文件:"
+					+ xmlFile.getCanonicalPath());
+		}
+
+		log.info("Excel2SimpleXml解析文件" + middleFile.getCanonicalPath() + "所使用的配置文件为" + xmlFile.getCanonicalPath());
+
+		InputStream fis = null;
+		XMLFactory excelInfoFactory = null;
+		ExcelInfo excelInfo = null;
+
+		InputStream is = null;
+		Workbook wb = null;
+		PrintWriter txtWriter = null;
+		try
+		{
+			// 2、配置文件实例化
+			fis = new FileInputStream(xmlFile);
+			excelInfoFactory = new XMLFactory(ExcelInfo.class);
+			excelInfo = excelInfoFactory.unmarshal(fis);
+			// 3、excel文件实例化
+			try
+			{
+				// xls格式文件
+				is = new FileInputStream(middleFile);
+				wb = new HSSFWorkbook(is);
+			} catch (OfficeXmlFileException e)
+			{// xlsx格式文件
+				is.close();
+				is = new FileInputStream(middleFile);
+				wb = new XSSFWorkbook(is);
+			}
+			// 4、组织数据
+			int dataPartNum = 0;// 数据分拆段数
+			File dataFile = null;
+			List<Integer> excelSheetIdx = new ArrayList<Integer>();// 记录sheet序列
+			// 4.1获取配置文件与excel文件中sheet映射关系
+			this.organizeSheetIdx(excelInfo, wb, xmlFile, srcFile, excelSheetIdx);
+			List<SheetInfo> sheetInfos = excelInfo.getSheetInfos();
+			// 4.2 逐excel文件sheet处理数据
+			for (int i = 0; i < excelSheetIdx.size(); i++)
+			{
+				SheetInfo sheetInfo = sheetInfos.get(i);
+				int dataRowStartNum = sheetInfo.getDataRowStartNum();
+				String tableName = sheetInfo.getTableName();
+				Sheet sheet = wb.getSheetAt(excelSheetIdx.get(i));
+				if (sheet != null && sheet.getLastRowNum() - dataRowStartNum > 0)
+				{
+					List<DbLoaderColumn> columns = new ArrayList<DbLoaderColumn>();
+					StringBuffer columnsSB = new StringBuffer();
+					// 4.2.1、组织列头
+					this.organizeColumn(sheetInfo, paramMap, columns, columnsSB);
+					dataPartNum++;
+					dataFile = new File(Constant.ORACLE_TXT + "/" + srcFile.getName() + "_" + tableName + ".part"
+							+ new DecimalFormat("00000").format(dataPartNum) + ".txt");
+					if (!dataFile.getParentFile().exists())
+					{
+						dataFile.getParentFile().mkdirs();
+					}
+					txtWriter = new PrintWriter(dataFile, "gb2312");
+					// 4.2.2、写入表头
+					txtWriter.write(columnsSB.toString() + LINESEPARATOR);
+					// 4.2.3、组织数据列顺序
+					List<Object[]> colIdx = new ArrayList<Object[]>();// 记录列序号
+					this.organizeColIdx(sheetInfo, sheet, xmlFile, srcFile, i, colIdx);
+					// 4.2.4、开始写入数据
+					for (int j = dataRowStartNum; j <= sheet.getLastRowNum(); j++)
+					{
+						Row row = sheet.getRow(j);
+						StringBuffer sb=new StringBuffer();
+						for (int k = 0; k < colIdx.size(); k++)
+						{
+							Cell cell = row.getCell((Integer)colIdx.get(k)[0]);
+							String value=this.getValue(cell, (ColumnInfo)colIdx.get(k)[1]);
+							sb.append(value+",");
+						}
+						txtWriter.write(sb.substring(0, sb.length()-1)+LINESEPARATOR);
+					}
+					txtWriter.close();
+					// 4.2.5、入库
+					DbLoaderUtil.load2db(srcFile, dataFile, new DbLoaderTable(tableName), columns);
+				}
+			}
+
+		} catch (Exception e)
+		{
+			throw e;
+		} finally
+		{
+			if (fis != null)
+			{
+				fis.close();
+			}
+			if (is != null)
+			{
+				is.close();
+			}
+			if (txtWriter != null)
+			{
+				txtWriter.close();
+			}
+		}
+	}
+
+	private String getValue(Cell cell, ColumnInfo columnInfo)
+	{
+		int cellType = cell.getCellType();
+		String dbColType = columnInfo.getDbColType();
+		if (cellType == Cell.CELL_TYPE_BLANK)
+		{
+			return "";
+		} else if (dbColType != null && dbColType.trim().equalsIgnoreCase("date"))
+		{
+			
+			if (cellType==Cell.CELL_TYPE_NUMERIC)
+			{
+				String dbColFormat = columnInfo.getDbColFormat();
+				SimpleDateFormat sdf = new SimpleDateFormat(dbColFormat);
+				return sdf.format(cell.getDateCellValue());
+			} else
+			{
+				return cell.getStringCellValue();
+			}
+		}
+		if (cellType == Cell.CELL_TYPE_BOOLEAN)
+		{
+			return String.valueOf(cell.getBooleanCellValue());
+		} else if (cellType == Cell.CELL_TYPE_NUMERIC)
+		{
+			double numericCellValue=cell.getNumericCellValue();
+			DecimalFormat df = new DecimalFormat();  
+			df.setMaximumFractionDigits(10); // 设置最大小数位  
+			df.setGroupingUsed(false);
+			String result = df.format(numericCellValue); 
+			return result;
+		} else
+		{
+			return cell.getStringCellValue();
+		}
+	}
+
+	/**
+	 * 获取入库列名
+	 * 
+	 * @param sheetInfo
+	 * @param paramMap
+	 * @param columns
+	 * @param columnsStr
+	 */
+	private void organizeColumn(SheetInfo sheetInfo, Map<String, Object> paramMap, List<DbLoaderColumn> columns,
+			StringBuffer columnsStr)
+	{
+		List<ColumnInfo> columnInfos = sheetInfo.getColumnInfos();
+		for (int j = 0; j < columnInfos.size(); j++)
+		{
+			ColumnInfo columnInfo = columnInfos.get(j);
+			String dbColName = columnInfo.getDbColName();// 列名
+			String dbColType = columnInfo.getDbColType();// 列类型
+			String dbColFormat = columnInfo.getDbColFormat();// 列格式
+			String constantValue = columnInfo.getConstantValue();// 静态数据
+			String columnStr = dbColName + ",";// 字段对应的表头
+			DbLoaderColumn column = new DbLoaderColumn(dbColName);
+			if (!StringUtil.isEmpty(dbColType))
+			{
+				column.setType(dbColType);
+			}
+			if (!StringUtil.isEmpty(dbColFormat))
+			{
+				column.setFormat(dbColFormat);
+			}
+			if (!StringUtil.isEmpty(constantValue))
+			{
+				constantValue = constantValue.trim();
+				if (constantValue.startsWith("$") && constantValue.endsWith("$"))
+				{// 通过参数传入静态数据
+					constantValue = (String) paramMap.get(constantValue.substring(1, constantValue.length() - 1));
+				}
+				column.setConstantValue(constantValue);
+				columnStr = "";// 字段对应的表头，当取静态值时，不必在数据表头显示
+			}
+			columns.add(column);
+			columnsStr.append(columnStr);
+		}
+	}
+
+	/**
+	 * 组织excel中对应的sheet顺序
+	 * @param excelInfo
+	 * @param wb
+	 * @param xmlFile
+	 * @param srcFile
+	 * @param excelSheetIdx
+	 * @throws Exception
+	 */
+	private void organizeSheetIdx(ExcelInfo excelInfo, Workbook wb, File xmlFile, File srcFile,
+			List<Integer> excelSheetIdx) throws Exception
+	{
+		String sheetIdentifiedBy = excelInfo.getIdentifiedBy();
+		List<SheetInfo> sheetInfos = excelInfo.getSheetInfos();
+		if (sheetIdentifiedBy != null && sheetIdentifiedBy.trim().equals("name"))
+		{// 按照sheet页的名字区分
+			for (int i = 0; i < sheetInfos.size(); i++)
+			{
+				String sheetName = sheetInfos.get(i).getName();
+				if (StringUtil.isEmpty(sheetName))
+				{
+					throw new Exception("Excel2Db配置文件错误：配置文件" + xmlFile.getCanonicalPath() + "，第" + i
+							+ "个sheet中属性name不能为空");
+				}
+				int sheetIndex = wb.getSheetIndex(sheetName.trim());
+				if (sheetIndex > -1)
+				{
+					excelSheetIdx.add(sheetIndex);
+				} else
+				{
+					throw new Exception("未找到配置文件" + xmlFile.getCanonicalPath() + "，第" + i + "个sheet(name=\""
+							+ sheetName + "\")对应excel中的sheet。源文件为：" + srcFile.getCanonicalPath());
+				}
+
+			}
+		} else
+		{
+			for (int i = 0; i < sheetInfos.size(); i++)
+			{
+				int sheetidx = sheetInfos.get(i).getIdx();
+				try
+				{
+					wb.getSheetAt(sheetidx);
+					excelSheetIdx.add(sheetidx);
+				} catch (IllegalArgumentException e)
+				{
+					if (e.getMessage().startsWith("Sheet index ("))
+					{
+						e.printStackTrace();
+						throw new Exception("未找到配置文件" + xmlFile.getCanonicalPath() + "，第" + i + "个sheet(idx=\""
+								+ sheetidx + "\")对应excel中的sheet。源文件为：" + srcFile.getCanonicalPath());
+					} else
+					{
+						throw e;
+					}
+				}
+			}
+
+		}
+
+	}
+
+	/**
+	 * 组织excel中对应的列顺序
+	 * @param sheetInfo
+	 * @param sheet
+	 * @param xmlFile
+	 * @param srcFile
+	 * @param sheetInfoIdx
+	 * @param colIdx
+	 * @throws Exception
+	 */
+	private void organizeColIdx(SheetInfo sheetInfo, Sheet sheet, File xmlFile, File srcFile, int sheetInfoIdx,
+			List<Object[]> colIdx) throws Exception
+	{
+		String coldentifiedBy = sheetInfo.getIdentifiedBy();
+		List<ColumnInfo> columnInfos = sheetInfo.getColumnInfos();
+		int titleRowNum = sheetInfo.getTitleRowNum();
+		Row titleRow = sheet.getRow(titleRowNum);
+		int lastCellNum = titleRow.getLastCellNum();
+		if (coldentifiedBy != null && coldentifiedBy.equals("field"))
+		{// 按照列头准备顺序
+			for (int j = 0; j < columnInfos.size(); j++)
+			{
+				ColumnInfo columnInfo = columnInfos.get(j);
+				String field = columnInfo.getField();
+				String constantValue=columnInfo.getConstantValue();
+				if (!StringUtil.isEmpty(constantValue))
+				{
+					continue;
+				}
+				if (StringUtil.isEmpty(field))
+				{
+					throw new Exception("Excel2Db配置文件错误：配置文件" + xmlFile.getCanonicalPath() + "，第" + sheetInfoIdx
+							+ "个sheet第" + j + "个column中属性field不能为空");
+				}
+				int k = 0;
+				for (; k < lastCellNum; k++)
+				{
+					Cell cell = titleRow.getCell(k);
+					String cellValue = cell.getStringCellValue();
+					if (cellValue.trim().equalsIgnoreCase(field.trim()))
+					{
+//						colIdx.add(columnInfos.get(j).getIdx());
+						Object[] col={columnInfos.get(j).getIdx(),columnInfo};
+						colIdx.add(col);
+						break;
+					}
+				}
+				if (k == lastCellNum)
+				{// 未找到对应字段，抛出错误
+					throw new Exception("未找到配置文件" + xmlFile.getCanonicalPath() + "，第" + sheetInfoIdx + "个sheet第" + j
+							+ "个column中属性field(" + field + ")对应列。源文件为：" + srcFile.getCanonicalPath());
+				}
+			}
+		} else
+		{// 按照列顺序准备顺序
+			for (int j = 0; j < columnInfos.size(); j++)
+			{
+				ColumnInfo columnInfo=columnInfos.get(j);
+				int idx = columnInfo.getIdx();
+				String constantValue=columnInfo.getConstantValue();
+				if (!StringUtil.isEmpty(constantValue))
+				{
+					continue;
+				}
+				if (idx > lastCellNum)
+				{
+					throw new Exception("未找到配置文件" + xmlFile.getCanonicalPath() + "，第" + sheetInfoIdx + "个sheet第" + j
+							+ "个column中属性idx(" + idx + ")对应列。源文件为：" + srcFile.getCanonicalPath());
+				} else
+				{
+//					colIdx.add(columnInfos.get(j).getIdx());
+					Object[] col={columnInfos.get(j).getIdx(),columnInfo};
+					colIdx.add(col);
+				}
+			}
+		}
+	}
+
+	public static void main(String[] args)
+	{
+		File dataInfoFile = new File("C:\\Users\\lex\\Desktop\\725\\Desktop\\室分2013-07-23详表&汇总.xlsx");
+		Map<String, Object> paramMap = new HashMap<String, Object>();
+		paramMap.put(Excel2DbTransformator.EXCEL2DBMAPFILE, "C:\\Users\\lex\\Desktop\\731\\Excel2DbMp.xml");
+		Excel2DbTransformator testTransformator = new Excel2DbTransformator();
+		try
+		{
+			testTransformator.transformat(dataInfoFile, dataInfoFile, dataInfoFile, paramMap);
+		} catch (Exception e)
+		{
+			e.printStackTrace();
+		}
+	}
+
+}

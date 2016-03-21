@@ -1,0 +1,328 @@
+package com.inspur.ftpparserframework.ftp.obj;
+
+import java.io.Serializable;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import org.apache.log4j.Logger;
+
+import com.inspur.ftpparserframework.util.StringUtil;
+import com.inspur.ftpparserframework.util.TimeUtil;
+
+public class FtpServer implements Serializable
+{
+	/**
+	 * 
+	 */
+	private static final long serialVersionUID = -6427566765895461674L;
+
+	private static final Logger log = Logger.getLogger(FtpServer.class);
+
+	private String vendor;
+
+	private String version;
+
+	private String name;
+
+	private String ip;
+
+	private int port = 21;
+
+	private String user;
+
+	private String password;
+	
+	private String dir;
+
+	
+	private String filter;
+	
+	private String storedir;
+	
+	private boolean delete = false;
+
+	private String city = "";
+
+	private String technology;
+	
+	private String dateformat;
+	
+	/**
+	 * 由于数据质量侧要求每个任务可以入到不同的数据库，因此需要在此标识任务id，并放到下载路径
+	 */
+	private String taskPublishId;
+	/**
+	 * ftp编号，数据质量侧要求
+	 */
+	private String id; 
+	
+	private int threadpool=0;
+
+	public int getThreadpool()
+	{
+		return threadpool;
+	}
+
+	public void setThreadpool(int threadpool)
+	{
+		this.threadpool = threadpool;
+	}
+
+	public String getDateformat()
+	{
+		return dateformat;
+	}
+
+	public void setDateformat(String dateformat)
+	{
+		this.dateformat = dateformat;
+	}
+
+	public String getVendor()
+	{
+		return vendor;
+	}
+
+	public void setVendor(String vendor)
+	{
+		this.vendor = vendor;
+	}
+
+	public String getVersion()
+	{
+		return version;
+	}
+
+	public void setVersion(String version)
+	{
+		this.version = version;
+	}
+
+	public String getName()
+	{
+		return name;
+	}
+
+	public void setName(String name)
+	{
+		this.name = name;
+	}
+
+	public String getIp()
+	{
+		return ip;
+	}
+
+	public void setIp(String ip)
+	{
+		this.ip = ip;
+	}
+
+	public int getPort()
+	{
+		return port;
+	}
+
+	public void setPort(int port)
+	{
+		this.port = port;
+	}
+
+	public String getUser()
+	{
+		return user;
+	}
+
+	public void setUser(String user)
+	{
+		this.user = user;
+	}
+
+	public String getPassword()
+	{
+		return password;
+	}
+
+	public void setPassword(String password)
+	{
+		this.password = password;
+	}
+
+	public String getDir()
+	{
+
+		String realDir = dir;
+
+		Pattern p = Pattern.compile("(.*)\\$TIME\\((.+)\\)\\$(.*)");
+		Matcher m = p.matcher(dir);
+		if (m.matches())
+		{
+			String tmp = m.group(2);
+			String[] inputs = tmp.split(",");
+
+			String time = "";
+			if (inputs.length == 2)
+			{
+				time = TimeUtil.computeDate(inputs[0], inputs[1]);
+			} else if (inputs.length == 1)
+			{
+				time = TimeUtil.computeDate(inputs[0], "");
+			}
+
+			realDir = dir.replaceAll("\\$TIME\\((.+)\\)\\$", time);
+		}
+
+		log.debug("目录转换" + dir + "->" + realDir);
+
+//		return realFilter;
+		
+		return realDir;
+	}
+
+	public void setDir(String dir)
+	{
+		this.dir = dir;
+	}
+
+	public String getStoredir()
+	{
+		if (this.storedir == null)
+		{
+			if (taskPublishId==null)
+			{
+				this.storedir = "../data/input/" + name;
+			} else
+			{
+				this.storedir = "../data/input/~"+taskPublishId+"~/" + name;
+			}
+		}
+		return storedir;
+	}
+
+	public void setStoredir(String storedir)
+	{
+		this.storedir = storedir;
+	}
+
+	public boolean isDelete()
+	{
+		return delete;
+	}
+
+	public void setDelete(boolean delete)
+	{
+		this.delete = delete;
+	}
+
+	@Override
+	public String toString()
+	{
+		StringBuffer sb = new StringBuffer("Ftp Server:\n");
+		sb.append("vendor=").append(vendor).append("\n");
+		sb.append("version=").append(version).append("\n");
+		sb.append("name=").append(name).append("\n");
+		sb.append("ip=").append(ip).append("\n");
+		sb.append("port=").append(port).append("\n");
+		sb.append("user=").append(user).append("\n");
+		sb.append("password=").append(password).append("\n");
+		sb.append("dir=").append(dir).append("\n");
+		sb.append("filter=").append(filter).append("\n");
+		sb.append("delete=").append(delete).append("\n");
+		sb.append("storedir=").append(storedir);
+		return sb.toString();
+	}
+
+	public String getFilter()
+	{
+		return filter;
+	}
+
+	/**
+	 * 获取变量代换后的过滤条件
+	 * @param filter
+	 * @return
+	 */
+	public String getRealFilter()
+	{
+		if (StringUtil.isEmpty(filter))
+		{
+			return filter;
+		}
+		
+		String realFilter = filter;
+
+		Pattern p = Pattern.compile("(.*)\\$TIME\\((.+)\\)\\$(.*)");
+		Matcher m = p.matcher(filter);
+		if (m.matches())
+		{
+			String tmp = m.group(2);
+			String[] inputs = tmp.split(",");
+
+			String time = "";
+			if (inputs.length == 2)
+			{
+				time = TimeUtil.computeDate(inputs[0], inputs[1]);
+			} else if (inputs.length == 1)
+			{
+				time = TimeUtil.computeDate(inputs[0], "");
+			}
+
+			realFilter = filter.replaceAll("\\$TIME\\((.+)\\)\\$", time);
+		}
+
+		log.debug("过滤器转换" + filter + "->" + realFilter);
+
+		return realFilter;
+	}
+
+	public void setFilter(String filter)
+	{
+		this.filter = filter;
+	}
+
+	public String getCity()
+	{
+		return city;
+	}
+
+	public void setCity(String city)
+	{
+		this.city = city;
+	}
+
+	public String getTechnology()
+	{
+		return technology;
+	}
+
+	public void setTechnology(String technology)
+	{
+		this.technology = technology;
+	}
+
+	public String getTaskPublishId()
+	{
+		return taskPublishId;
+	}
+
+	public void setTaskPublishId(String taskPublishId)
+	{
+		this.taskPublishId = taskPublishId;
+	}
+
+	public String getId()
+	{
+		return id;
+	}
+
+	public void setId(String id)
+	{
+		this.id = id;
+	}
+	public static void main(String[] args) {
+		FtpServer fServer=new FtpServer();
+		fServer.setDir("$TIME(yyyyMMddHH,-H6)$");
+		System.out.println(fServer.getDir());
+	}
+	
+}

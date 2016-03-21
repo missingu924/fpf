@@ -1,0 +1,438 @@
+package com.inspur.ftpparserframework.log.obj;
+
+import java.beans.PropertyDescriptor;
+import java.io.File;
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.text.ParseException;
+import java.util.Date;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import org.apache.commons.beanutils.BeanUtils;
+import org.apache.commons.beanutils.PropertyUtils;
+import org.apache.commons.dbcp.BasicDataSource;
+import org.apache.log4j.Level;
+import org.apache.log4j.Logger;
+
+import com.inspur.ftpparserframework.config.ConfigReader;
+import com.inspur.ftpparserframework.extend.IBasicInfoParser;
+import com.inspur.ftpparserframework.util.StringUtil;
+import com.inspur.ftpparserframework.util.TimeUtil;
+
+public abstract class BaseLog
+{
+	public final String STATE_START = "开始";
+	public final String STATE_END = "结束";
+	public final String STATE_ERROR = "出错";
+
+	private Logger log = Logger.getLogger(getClass());
+	/**
+	 * 日志记录时间
+	 */
+	private Date logTime;
+
+	/**
+	 * 处理环节名称
+	 */
+	private String handleName;
+
+	/**
+	 * 处理环节状态，一般分为：开始、结束、出错 三类。
+	 */
+	private String handleState;
+
+	/**
+	 * 源文件
+	 */
+	private BaseFile srcFile = new BaseFile();
+
+	/**
+	 * 处理开始时间
+	 */
+	private Date startTime;
+
+	/**
+	 * 处理结束时间
+	 */
+	private Date endTime;
+
+	/**
+	 * 文件处理耗时，单位毫秒
+	 */
+	private long usedTimeMillis;
+
+	/**
+	 * 错误信息
+	 */
+	private String errorMessage = "";
+
+	/**
+	 * 文件基本信息
+	 */
+	private BasicInfo basicInfo = null;
+
+	/**
+	 * 备注信息
+	 */
+	private String mark = "";
+
+	public String getMark()
+	{
+		return mark;
+	}
+
+	public void setMark(String mark)
+	{
+		this.mark = mark;
+	}
+
+	public BasicInfo getBasicInfo() throws Exception
+	{
+		if (basicInfo == null)
+		{
+			String basicInfoParserClz = ConfigReader.getProperties("extend.basicInfoParser");
+			if (!StringUtil.isEmpty(basicInfoParserClz) && !StringUtil.isEmpty(getSrcFile().getPath()))
+			{
+				IBasicInfoParser basicInfoParser = (IBasicInfoParser) Thread.currentThread().getContextClassLoader()
+						.loadClass(basicInfoParserClz).newInstance();
+				basicInfo = basicInfoParser.parseBasicInfo(new File(getSrcFile().getPath()));
+			} else
+			{
+				basicInfo = new BasicInfo();
+			}
+		}
+
+		return basicInfo;
+	}
+
+	public void setBasicInfo(BasicInfo basicInfo)
+	{
+		this.basicInfo = basicInfo;
+	}
+
+	public Date getLogTime()
+	{
+		return logTime;
+	}
+
+	public void setLogTime(Date logTime)
+	{
+		this.logTime = logTime;
+	}
+
+	public String getHandleName()
+	{
+		return handleName;
+	}
+
+	public void setHandleName(String handleName)
+	{
+		this.handleName = handleName;
+	}
+
+	public String getHandleState()
+	{
+		return handleState;
+	}
+
+	public void setHandleState(String handleState)
+	{
+		this.handleState = handleState;
+	}
+
+	public BaseFile getSrcFile()
+	{
+		return srcFile;
+	}
+
+	public void setSrcFile(BaseFile srcFile) throws ParseException
+	{
+		this.srcFile = srcFile;
+	}
+
+	public Date getStartTime()
+	{
+		return startTime;
+	}
+
+	public void setStartTime(Date startTime)
+	{
+		this.startTime = startTime;
+	}
+
+	public Date getEndTime()
+	{
+		return endTime;
+	}
+
+	public void setEndTime(Date endTime)
+	{
+		this.endTime = endTime;
+	}
+
+	public String getErrorMessage()
+	{
+		return StringUtil.isEmpty(errorMessage) ? "" : errorMessage;
+	}
+
+	public void setErrorMessage(String errorMessage)
+	{
+		this.errorMessage = errorMessage;
+	}
+
+	public long getUsedTimeMillis()
+	{
+		return usedTimeMillis;
+	}
+
+	public void setUsedTimeMillis(long usedTimeMillis)
+	{
+		this.usedTimeMillis = usedTimeMillis;
+	}
+
+	/**
+	 * 合并两个对象的属性值
+	 * 
+	 * @param other
+	 * @throws Exception
+	 */
+	public void merge(Object other) throws Exception
+	{
+		Logger log = Logger.getLogger(BeanUtils.class.getPackage().getName());
+		log.setLevel(Level.INFO);
+
+		PropertyDescriptor[] ps = PropertyUtils.getPropertyDescriptors(other.getClass());
+		for (int i = 0; i < ps.length; i++)
+		{
+			PropertyDescriptor p = ps[i];
+			Object propertyValue = PropertyUtils.getProperty(other, p.getName());
+			if (propertyValue != null)
+			{
+				BeanUtils.setProperty(this, p.getName(), propertyValue);
+			}
+		}
+	}
+
+	//====================================日志解析 START====================================
+	/**
+	 * 日志解析：解析log字符串，获取具体log对象。
+	 * 
+	 * @param logStr
+	 */
+	public boolean parseLog(String logStr) throws Exception
+	{
+		Pattern p = Pattern.compile(getLogRegex());
+		Matcher m = p.matcher(logStr);
+		if (m.matches())
+		{
+			getInstance(m);
+			return true;
+		} else
+		{
+			return false;
+		}
+	}
+
+	/**
+	 * 日志解析：需子类实现，返回具体日志解析的正则表达式。
+	 * 
+	 * @return
+	 */
+	protected abstract String getLogRegex();
+
+	/**
+	 * 日志解析：根据正则表达式的结果构造log对象
+	 * 
+	 * @param matcher
+	 * @return
+	 */
+	protected abstract void getInstance(Matcher matcher) throws Exception;
+
+	//====================================日志解析 END====================================
+
+	//====================================日志输出至CSV文件 START====================================
+	/**
+	 * 日志输出到CSV：获取csv输出时的表头。
+	 * 
+	 * @return
+	 */
+	public String getCsvTitle()
+	{
+		return getBasicCsvTitle() + "," + getThisCsvTitle();
+	}
+
+	/**
+	 * 日志输出到CSV：获取csv输出时的数据。
+	 * 
+	 * @return
+	 * @throws ParseException
+	 */
+	public String toCsv() throws ParseException
+	{
+		return basic2Csv() + "," + this2Csv();
+	}
+
+	/**
+	 * 日志输出到CSV：基本信息表头输出。
+	 * 
+	 * @return
+	 */
+	private String getBasicCsvTitle()
+	{
+		StringBuilder sb = new StringBuilder();
+
+		sb.append(this.basicInfo.getThisCsvTitle()).append(",")//
+				.append("处理环节").append(",")//
+				.append("处理状态").append(",")//
+				.append(this.srcFile.getThisCsvTitle("源")).append(",")//
+				.append("本次处理开始时间").append(",")//
+				.append("本次处理结束时间").append(",")//
+				.append("本次处理耗时(毫秒)").append(",")//
+				.append("本次处理错误信息").append(",")//
+				.append("备注");
+
+		return sb.toString();
+	}
+
+	/**
+	 * 日志输出到CSV：基本信息数据输出。
+	 * 
+	 * @return
+	 * @throws ParseException
+	 */
+	private String basic2Csv() throws ParseException
+	{
+		StringBuilder sb = new StringBuilder();
+
+		sb.append(this.basicInfo.this2Csv()).append(",")//
+				.append(handleName).append(",")//
+				.append(handleState).append(",")//
+				.append(srcFile.this2Csv(true)).append(",")//
+				.append(TimeUtil.date2str(startTime)).append(",")//
+				.append(TimeUtil.date2str(endTime)).append(",")//
+				.append(getUsedTimeMillis()).append(",")//
+				.append(StringUtil.isEmpty(errorMessage) ? "" : "\"" + errorMessage + "\"").append(",")//
+				.append(mark);
+
+		return sb.toString();
+	}
+
+	/**
+	 * 日志输出到CSV：具体类实现，输出其特有的表头信息。
+	 * 
+	 * @return
+	 */
+	protected abstract String getThisCsvTitle();
+
+	/**
+	 * 日志输出到CSV：具体类实现，输出其特有的数据信息。
+	 * 
+	 * @return
+	 */
+	protected abstract String this2Csv();
+
+	//====================================日志输出至CSV文件 END====================================
+
+	//====================================日志输出至数据库 START====================================
+	/**
+	 * 数据库操作：保存或更新该日志信息至数据库中
+	 * 
+	 * @throws Exception
+	 */
+	public void saveOrUpdate() throws Exception
+	{
+		Connection conn = getConnection();
+		try
+		{
+//			if (!isTableExists(conn))
+//			{
+//				createTable(conn);
+//			} else if (isExistsInDb(conn))
+//			{
+//				update2Db(conn);
+//			} else
+//			{
+//				save2Db(conn);
+//			}
+			
+			// modify by wuyg 2013-1-21,不再检测数据库中是否存在相应记录,正常情况下不会出现重复数据入库,但是每次检测是比较耗费时间的,所以改为直接入库
+			save2Db(conn);
+		} catch (Exception e)
+		{
+			log.error(e.getMessage(), e);
+		} finally
+		{
+			if (conn != null)
+			{
+				conn.close();
+			}
+		}
+	}
+
+	private static BasicDataSource ds = null;
+
+	private Connection getConnection() throws SQLException
+	{
+		if (ds == null)
+		{
+			String driverClassName = ConfigReader.getProperties("log.dbDriverClassName");
+			String url = ConfigReader.getProperties("log.dbUrl");
+			String user = ConfigReader.getProperties("log.dbUser");
+			String password = ConfigReader.getProperties("log.dbPassword");
+
+			ds = new BasicDataSource();
+			ds.setDriverClassName(driverClassName);
+			ds.setUrl(url);
+			ds.setUsername(user);
+			ds.setPassword(password);
+			ds.setInitialSize(10);
+			ds.setMaxActive(100);
+			ds.setMaxIdle(5);
+			ds.setMaxWait(5);
+		}
+
+		Connection conn = ds.getConnection();
+
+		return conn;
+	}
+
+	/**
+	 * 数据库操作：判断日志对象所需的表、索引、序列等数据对象是否已经在数据库中创建
+	 * 
+	 * @return
+	 * @throws Exception
+	 */
+	protected abstract boolean isTableExists(Connection conn) throws Exception;
+
+	/**
+	 * 数据库操作：创建日志保存所需的表、索引、序列等数据库对象
+	 * 
+	 * @return
+	 * @throws Exception
+	 */
+	protected abstract void createTable(Connection conn) throws Exception;
+
+	/**
+	 * 数据库操作：判断日志对象是否已经入库。
+	 * 
+	 * @return
+	 * @throws Exception
+	 */
+	protected abstract boolean isExistsInDb(Connection conn) throws Exception;
+
+	/**
+	 * 数据库操作：日志对象保存入库。
+	 * 
+	 * @throws Exception
+	 */
+	protected abstract void save2Db(Connection conn) throws Exception;
+
+	/**
+	 * 数据库操作：更新已经入库的日志对象。
+	 * 
+	 * @throws Exception
+	 */
+	protected abstract void update2Db(Connection conn) throws Exception;
+	//====================================日志输出至数据库 END====================================
+}

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<excel identifiedBy="idx" description="室分详表汇总">
+	<sheet idx="0" name="室内五高一弱汇总表" titleRowNum="0" dataRowStartNum="1" identifiedBy="idx" tableName="sheet1" description="">
+		<column idx="0" field="时间" dbColName="time_id" dbColType="date" dbColFormat="yyyy-MM-dd"/>
+		<column idx="1" field="int_id" dbColName="int_id"/>
+		<column idx="2" field="地市" dbColName="city"/>
+		<column idx="3" field="sum_level" dbColName="sum_level"/>
+		<column idx="4" field="ne_type" dbColName="ne_type"/>
+		<column idx="5" field="上行室分高质差小区次数" dbColName="kpi01"/>
+		<column idx="6" field="下行室分高质差小区次数" dbColName="kpi02"/>
+		<column idx="7" field="室分高质差小区次数" dbColName="kpi03"/>
+		<column idx="8" field="室分高干扰小区次数" dbColName="kpi04"/>
+		<column idx="9" field="室分零业务gsm小区数" dbColName="kpi05"/>
+		<column idx="10" field="室分低业务小区数" dbColName="kpi06"/>
+		<column idx="11" field="全网GSM室分小区数(uldl24_0_7>0)" dbColName="kpi07"/>
+		<column idx="12" field="全网GSM室分小区数" dbColName="kpi08"/>
+		<column idx="13" field="室分高质差小区占比" dbColName="kpi09"/>
+		<column idx="14" field="室分高干扰小区比例" dbColName="kpi10"/>
+		<column idx="15" field="室分低业务量小区比例" dbColName="kpi11"/>
+		<column idx="16" field="室分零业务量小区比例" dbColName="kpi12"/>
+	</sheet>
+	<sheet idx="1" name="室内零业务小区详单" titleRowNum="0" dataRowStartNum="1" identifiedBy="idx" tableName="sheet2" description="">
+		<column idx="0" field="时间" dbColName="time_id" dbColType="date" dbColFormat="yyyy-MM-dd"/>
+		<column idx="1" field="int_id" dbColName="int_id"/>
+		<column idx="2" field="地市" dbColName="city"/>
+		<column idx="3" field="lac" dbColName="lac"/>
+		<column idx="4" field="ci" dbColName="ci"/>
+		<column idx="5" field="所属bsc" dbColName="kpi20"/>
+		<column idx="6" field="覆盖室内" dbColName="kpi21"/>
+		<column idx="7" field="gsm流量比值（24小时，上下行RLC层流量MCS编码1-9 和 CS1编码1-9流量 累加  除以8）" dbColName="kpi22"/>
+		<column idx="8" field="小区总话务量（24小时，Erl）" dbColName="kpi23"/>
+	</sheet>
+</excel>

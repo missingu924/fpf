@@ -1,0 +1,773 @@
+package com.inspur.ftpparserframework.ftp;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.util.ArrayList;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.HashSet;
+import java.util.Hashtable;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import org.apache.commons.net.ftp.FTP;
+import org.apache.commons.net.ftp.FTPClient;
+import org.apache.commons.net.ftp.FTPFile;
+import org.apache.log4j.Logger;
+
+import com.inspur.ftpparserframework.config.ConfigReader;
+import com.inspur.ftpparserframework.ftp.obj.FtpServer;
+import com.inspur.ftpparserframework.rmi.StatusCenter;
+import com.inspur.ftpparserframework.util.Constant;
+import com.inspur.ftpparserframework.util.FilterUtil;
+import com.inspur.ftpparserframework.util.StringUtil;
+import com.inspur.ftpparserframework.util.TimeUtil;
+
+/**
+ * FTP文件下载上传工具类
+ * 
+ * @author 武玉刚
+ * 
+ */
+public class FtpUtil
+{
+	private static Logger log = Logger.getLogger(FtpUtil.class);
+
+	/**
+	 * 下载某个目录下的所有文件，包括目录嵌套的下载能力
+	 * 
+	 * @param ftpthread
+	 * @param ip
+	 * @param port
+	 * @param user
+	 * @param password
+	 * @param ftpdir
+	 * @param storedir
+	 * @param filter
+	 * @param fileLastModifyTime
+	 * @param isReDownload
+	 * @return
+	 * @throws Exception
+	 */
+	public static boolean downloadNested(FtpThread ftpthread, String ip, int port, String user, String password,
+			String ftpdir, String storedir, String filter, long fileLastModifyTime, boolean isReDownload)
+			throws Exception
+	{
+		String ftpServerName = ftpthread != null ? ftpthread.getFtpServer().getName() : ip;
+		FTPClient ftp = null;
+		boolean rst = true;
+		// int downloadFileCount = 0;
+		Date startTime = new Date();
+		MyFTPThreadPool myFTPThreadPool = null;// add by lex 20140619
+		try
+		{
+			// add by lex 20140619 start
+			int threadpool = ftpthread.getFtpServer().getThreadpool();
+			if (threadpool > 1)
+			{
+				myFTPThreadPool = new MyFTPThreadPool(threadpool);
+			}
+			// add by lex 20140619 end
+
+			// 日志格式：#文件递归下载#-[开始]-[FTP服务器=xx,目录=yy,过滤条件=ff]
+			log.info("#文件递归下载#-[开始]-[FTP服务器=" + ftpServerName + ",目录=" + ftpdir + ",过滤条件=" + filter + "]");
+
+			// 格式化文件路径
+			storedir = storedir.replace('\\', '/');
+			if (!storedir.endsWith("/"))
+			{
+				storedir += "/";
+			}
+
+			// 连接FTP
+			ftp = connect(ftpServerName, ip, port, user, password);
+			ftpthread.setFtp(ftp);// 务必赋值
+
+			// 获取FTP服务器当前时间
+			Calendar ftpTimeNow = getFtpTimeNow(ftpServerName, ftp, ftpdir);
+
+			// 获取近两天已下载的文件列表
+			// List<String> alreayDlFiles = FilterUtil.getRecordFileList(FilterUtil.PREFIX_DOWNLOAD);
+			Set<String> alreayDlFiles = FilterUtil.getRecordFileList(FilterUtil.PREFIX_DOWNLOAD);// modify by lex
+			// 20140619,由List改为Set，查询效率
+			// 下载文件
+			FileCount downloadFileCount = new FileCount();
+
+			downloadNested(ftpServerName, ftpthread, ftp, ftpdir, filter, storedir, ftpTimeNow, fileLastModifyTime,
+					isReDownload, alreayDlFiles, myFTPThreadPool, downloadFileCount);
+			if (myFTPThreadPool != null)
+			{
+				myFTPThreadPool.shutdown();
+				myFTPThreadPool=null;
+			}
+			// 日志格式：#文件递归下载#-[结束]-[FTP服务器=xx,目录=yy,过滤条件=ff]-[下载文件数=mm]-[耗时=nn毫秒]
+			log.info("#文件递归下载#-[结束]-[FTP服务器=" + ftpServerName + ",目录=" + ftpdir + ",过滤条件=" + filter + "]-[下载文件数="
+					+ downloadFileCount.getNum() + "]-[耗时=" + (new Date().getTime() - startTime.getTime()) + "毫秒]");
+		} catch (Exception e)
+		{
+			// 日志格式：#文件递归下载#-[出错]-[FTP服务器=xx,目录=yy,过滤条件=ff]-[耗时=nn毫秒]-[错误信息=ee]
+			log.info("#文件递归下载#-[出错]-[FTP服务器=" + ftpServerName + ",目录=" + ftpdir + ",过滤条件=" + filter + "]-[耗时="
+					+ (new Date().getTime() - startTime.getTime()) + "毫秒]-[错误信息=" + e.getMessage() + "]");
+
+			throw e;// ！！错误必须抛出，由ftp超时监控线程捕获，以便重启采集线程。！！
+		} finally
+		{
+			if (myFTPThreadPool != null)
+			{
+				myFTPThreadPool.shutdown();
+				myFTPThreadPool=null;
+			}
+			try
+			{
+				if (ftp != null)
+				{
+					ftp.disconnect();
+					ftpthread.setFtp(null);// 务必赋值为空
+					ftp = null;
+				}
+			} catch (IOException ex)
+			{
+			}
+		}
+		return rst;
+	}
+
+	public static void downloadNested(String ftpServerName, FtpThread ftpthread, FTPClient ftp, String pathname,
+			String filter, String storeDir, Calendar ftpTimeNow, long fileLastModifyTime, boolean isReDownload,
+			Set<String> alreayDlFiles, MyFTPThreadPool myFTPThreadPool, FileCount downloadFileCount) throws Exception
+	{
+		long starTime = System.currentTimeMillis();
+		// int downloadFileCount = 0;
+
+		// 切换目录并获取文件列表
+		ftp.changeWorkingDirectory(pathname);
+		// modify by wuyg 2014-3-21,注释掉下面这一样，主动被动模式在connect方法里面统一设置
+		// ftp.enterLocalPassiveMode();
+		FTPFile[] files = ftp.listFiles(filter);
+		if (files == null || files.length == 0)
+		{
+			files = ftp.listFiles();// 避免文件夹嵌套时被过滤掉
+		}
+		log.info("文件列表完毕:目录="+pathname+",文件总数=" + files.length + ",耗时=" + (System.currentTimeMillis() - starTime) + "毫秒");
+		if (files == null || files.length == 0)
+		{
+			log
+					.info("FTP服务器"
+							+ (ftpthread != null ? ftpthread.getFtpServer().getName() : ftp.getRemoteAddress()
+									.getHostAddress()) + "的目录" + pathname + "下没有任何符合过滤器(" + filter + ")的文件。");
+			return;
+		}
+
+		boolean needFiltered = !StringUtil.isEmpty(filter);// 是否需要过滤
+		String[] names = null;
+		long listNameStarTime = System.currentTimeMillis();
+		if (needFiltered)
+		{
+			names = ftp.listNames(filter);
+		} else
+		{
+			names = ftp.listNames();
+		}
+		Set<String> nameSet=new HashSet<String>();
+		if (names!=null&&names.length>0)
+		{
+			log.debug("文件名列表完毕:目录="+pathname+",文件名总数=" + names.length + ",耗时=" + (System.currentTimeMillis() - listNameStarTime) + "毫秒");
+			listNameStarTime = System.currentTimeMillis();
+			for (int i = 0; i < names.length; i++)
+			{
+				nameSet.add(names[i]);
+			}
+			log.debug("文件名列表添加到Set完毕:目录="+pathname+",文件名总数=" + names.length + ",耗时=" + (System.currentTimeMillis() - listNameStarTime) + "毫秒");
+		}
+		// 2、首先区分出当前目录下的文件和子目录
+		List<FTPFile> ftpFiles = new ArrayList<FTPFile>();// 文件
+		List<FTPFile> ftpDirs = new ArrayList<FTPFile>();// 目录
+
+		for (int i = 0; i < files.length; i++)
+		{
+			FTPFile file = files[i];
+
+			if (file.getName().equals(".") || file.getName().equals(".."))
+			{
+				continue;
+			}
+
+			if (file.isDirectory())
+			{
+				ftpDirs.add(file);
+			} else
+			{
+				ftpFiles.add(file);
+			}
+		}
+		// 3、先处理当前目录下的文件
+		for (int i = 0; i < ftpFiles.size(); i++)
+		{
+			// 处理一个文件时间置为最新
+			ftpthread.setStartTime(new Date());
+			if (i % 1000 == 0 || i == ftpFiles.size() - 1)
+			{
+				log.info("FTP服务器=" + ftpServerName + ",检索文件数=" + i);
+			}
+
+			// 获取文件
+			FTPFile file = ftpFiles.get(i);
+
+			// 判断文件的生成时间是否在采集要求的范围内。 如果具有ftp文件上传的权限，则会上传一个文件并获取其时间作为ftp服务器的当前时间;否则，则使用采集服务器的时间（这就要求采集服务器和ftp服务器时间要同步）。
+			long timeNow = System.currentTimeMillis();
+			if (ftpTimeNow != null)
+			{
+				timeNow = ftpTimeNow.getTimeInMillis();
+			}
+
+			// 3.1、判断文件是否是最近n秒内生成的文件，默认只检索最近1个小时生成的文件
+			if (!isReDownload)// 补采时不关心文件生成时间
+			{
+				if (timeNow - file.getTimestamp().getTimeInMillis() > fileLastModifyTime * 1000l)
+				{
+					log.debug(file.getName() + "在ftp服务器上生成已超过:" + fileLastModifyTime + "秒，不再采集。");
+					continue;
+				}
+			}
+
+			// 3.2、判断文件在ftp服务器上生成时间是否超过20秒
+			if (timeNow - file.getTimestamp().getTimeInMillis() < 20 * 1000l)
+			{
+				// (new SimpleDateFormat("yyyy-MM-dd HH:mm:ss")).format(new Date(System.currentTimeMillis()))
+				log.debug(file.getName() + "在ftp服务器上生成不足:" + 20 + "秒，暂不采集。");
+				continue;
+			}
+
+			// 3.3、判断文件大小是否为0
+			if (file.getSize() == 0)
+			{
+				log.debug(file.getName() + "大小为0，暂不采集。");
+				continue;
+			}
+
+			// 3.4、进行过滤
+			boolean downloadSucc = false;
+			if (!needFiltered)
+			{
+				// downloadSucc = downloadOnce(ftpthread, ftp, file, storeDir, isReDownload, alreayDlFiles);
+				// add by lex 20140619 start
+				if (myFTPThreadPool != null)
+				{
+					Thread upDownLoadThread = new UpDownLoadThread(ftpthread, file, pathname,
+							storeDir, isReDownload ? Constant.FTP_RE_DOWNLOAD : Constant.FTP_DOWNLOAD, alreayDlFiles,
+							downloadFileCount,myFTPThreadPool);
+					myFTPThreadPool.execute(upDownLoadThread);
+				} else
+				{
+					downloadSucc = downloadOnce(ftpthread, ftp, file, storeDir, isReDownload, alreayDlFiles);
+				}
+				// add by lex 20140619 end
+			} else
+			{
+				boolean needDownload = false;
+
+//				if (names != null)
+//				{
+//					for (int j = 0; j < names.length; j++)
+//					{
+//						if (file.getName().equals(names[j]))
+//						{
+//							needDownload = true;
+//							break;
+//						}
+//					}
+//				}
+				if (nameSet.contains(file.getName()));
+				{
+					needDownload = true;
+				}
+
+				if (needDownload)
+				{
+					// downloadSucc = downloadOnce(ftpthread, ftp, file, storeDir, isReDownload, alreayDlFiles);
+					// add by lex 20140619 start
+					if (myFTPThreadPool != null)
+					{
+						Thread upDownLoadThread = new UpDownLoadThread(ftpthread, file, pathname,
+								storeDir, isReDownload ? Constant.FTP_RE_DOWNLOAD : Constant.FTP_DOWNLOAD,
+								alreayDlFiles, downloadFileCount,myFTPThreadPool);
+						myFTPThreadPool.execute(upDownLoadThread);
+					} else
+					{
+						downloadSucc = downloadOnce(ftpthread, ftp, file, storeDir, isReDownload, alreayDlFiles);
+					}
+					// add by lex 20140619 end
+				} else
+				{
+					log.debug("FTP服务器" + ftp.getRemoteAddress().getHostAddress() + "目录" + pathname + "下的文件" + file
+							+ "不符合过滤条件(" + filter + ")要求,不下载。");
+				}
+			}
+			// 下载成功文件数加1
+			if (downloadSucc)
+			{
+				// downloadFileCount++;
+				downloadFileCount.addOne();
+			}
+		}
+
+		// 4、再处理当前目录下的子目录
+		for (int i = 0; i < ftpDirs.size(); i++)
+		{
+			FTPFile file = ftpDirs.get(i);
+			downloadNested(ftpServerName, ftpthread, ftp, pathname + "/" + file.getName(), filter, storeDir + "/"
+					+ file.getName(), ftpTimeNow, fileLastModifyTime, isReDownload, alreayDlFiles, myFTPThreadPool,
+					downloadFileCount);
+		}
+		// return downloadFileCount;
+	}
+
+	/**
+	 * 只下载一次，不论成功与否
+	 * 
+	 * @param ftp
+	 * @param srcFileName
+	 * @param storedir
+	 * @param delete
+	 * @return
+	 */
+	public static boolean downloadOnce(FtpThread ftpthread, FTPClient ftp, FTPFile srcFile, String storedir,
+			boolean isReDownload, Set<String> alreayDlFiles) throws Exception
+	{
+		String srcFileInfo = "[源文件=" + ftp.printWorkingDirectory() + "/" + srcFile.getName() + ",大小="
+				+ srcFile.getSize() + "Byte,时间=" + TimeUtil.date2str(srcFile.getTimestamp().getTime()) + "]";
+		Date dlStartTime = new Date();
+		String ftpServerName = ftpthread != null ? ftpthread.getFtpServer().getName() : "";
+
+		FileOutputStream fout = null;// 目的文件流
+		try
+		{
+			boolean rst = true;
+
+			// 1、下载文件，现在过程中以.tmp标识
+			String srcFileName = srcFile.getName();
+			storedir = storedir.replace('\\', '/');
+			if (!storedir.endsWith("/"))
+			{
+				storedir += "/";
+			}
+			File destFileTmp = new File(storedir + srcFileName + ".tmp");
+			File destFile = new File(storedir + srcFileName);
+			if (!destFileTmp.getParentFile().exists())
+			{
+				destFileTmp.getParentFile().mkdirs();
+			}
+
+			// 2、判断文件是否已经下载过
+			String recordInfo = destFile.getCanonicalPath() + "-"
+					+ TimeUtil.date2str(srcFile.getTimestamp().getTime(), "yyyyMMddHHmmss");
+			if (isReDownload)// 补采
+			{
+				if (!FilterUtil.shouldReDownload(recordInfo))
+					return false;
+			} else
+			{
+				if (alreayDlFiles.contains(recordInfo))
+				{
+					return false;
+				}
+			}
+
+			// 3、下载为临时文件
+			// 日志格式：#单文件下载#-[开始]-[FTP服务器名=FTPSVR]-[源文件=xx,大小=xxByte,时间=yyyy-MM-dd HH:mm:ss]
+			log.info("#单文件下载#-[开始]-[FTP服务器=" + ftpServerName + "]-" + srcFileInfo);
+			fout = new FileOutputStream(destFileTmp);
+			// modify by wuyg 2014-3-21,注释掉下面这一样，主动被动模式在connect方法里面统一设置
+			// ftp.enterLocalPassiveMode();
+			rst = ftp.retrieveFile(srcFileName, fout);
+			fout.close();// 必须关闭，否则临时文件无法重命名。
+
+			// 4、下载后的临时文件重命名为正式文件
+			if (destFile.exists())
+			{
+				rst = destFile.delete();
+			}
+			rst &= destFileTmp.renameTo(destFile);
+
+			// 5、设置FTP线程的最新活动时间
+			if (ftpthread != null)
+			{
+				ftpthread.setStartTime(new Date());
+			}
+
+			// 6、已下载的文件则进行记录,如果下载下来的文件大小为0则不记录
+			if (destFile.length() == srcFile.getSize())
+			{
+				FilterUtil.recordDownloadedFile(recordInfo);
+				// 日志格式：#单文件下载#-[结束]-[FTP服务器名=FTPSVR]-[源文件=xx,大小=xxByte,时间=yyyy-MM-dd
+				// HH:mm:ss]-[目的文件=yy,大小=xxByte,时间=yyyy-MM-dd HH:mm:ss]-[耗时=n毫秒]
+				log.info("#单文件下载#-[结束]-[FTP服务器=" + ftpServerName + "]" + "-" + srcFileInfo + "-[目的文件="
+						+ destFile.getCanonicalPath() + ",大小=" + destFile.length() + "Byte,时间="
+						+ TimeUtil.date2str(destFile.lastModified()) + "]" + "-[耗时="
+						+ (new Date().getTime() - dlStartTime.getTime()) + "毫秒]");
+
+				// 记录下载成功文件数
+				StatusCenter.oneFileDlSucc();
+				// 删除服务器端文件
+				if (ftpthread.getFtpServer().isDelete())
+				{
+					log.info("#服务端单文件删除#-[开始]-[FTP服务器=" + ftpServerName + "]-" + srcFileInfo);
+					Date delStartTime = new Date();
+					boolean isDelete = false;
+					try
+					{
+						isDelete = ftp.deleteFile(srcFile.getName());
+						if (isDelete)
+						{
+							log.info("#服务端单文件删除#-[结束]-[FTP服务器=" + ftpServerName + "]" + "-" + srcFileInfo + "-[耗时="
+									+ (new Date().getTime() - delStartTime.getTime()) + "毫秒]");
+						} else
+						{
+							log.info("#服务端单文件删除#-[出错]-[FTP服务器=" + ftpServerName + "]" + "-" + srcFileInfo + "-[耗时="
+									+ (new Date().getTime() - delStartTime.getTime()) + "毫秒]");
+						}
+					} catch (Exception e)
+					{
+						log.info("#服务端单文件删除#-[出错]-[FTP服务器=" + ftpServerName + "]" + "-" + srcFileInfo + "-[耗时="
+								+ (new Date().getTime() - delStartTime.getTime()) + "毫秒]" + "-[错误信息=" + e.getMessage()
+								+ "]");
+					}
+
+				}
+
+			} else
+			{
+				// 日志格式：#单文件下载#-[出错]-[FTP服务器名=FTPSVR]-[源文件=xx,大小=xxByte,时间=yyyy-MM-dd HH:mm:ss]-[耗时=n毫秒]-[错误信息=xx]
+				log.error("#单文件下载#-[出错]-[FTP服务器=" + ftpServerName + "]-" + srcFileInfo + "-[耗时="
+						+ (new Date().getTime() - dlStartTime.getTime()) + "毫秒]");
+				if (rst)
+				{// add by lex 20140621，文件成功记录数不等于"#单文件下载#-[结束]",怀疑此处问题，待验证
+					log.warn("下载成功，下载后的文件大小与原文件不等仍然记为下载失败");
+					rst = false;
+				}
+
+				// 记录下载失败文件数
+				StatusCenter.oneFileDlError();
+			}
+			return rst;
+		} catch (Exception e)
+		{
+			// 日志格式：#单文件下载#-[出错]-[FTP服务器名=FTPSVR]-[源文件=xx,大小=xxByte,时间=yyyy-MM-dd HH:mm:ss]-[耗时=n毫秒]-[错误信息=xx]
+			log.error("#单文件下载#-[出错]-[FTP服务器=" + ftpServerName + "]-" + srcFileInfo + "-[耗时="
+					+ (new Date().getTime() - dlStartTime.getTime()) + "毫秒]");
+
+			// 记录下载失败文件数
+			StatusCenter.oneFileDlError();
+
+			throw e;
+		} finally
+		{
+			if (fout != null)
+			{
+				fout.close();
+			}
+		}
+	}
+
+	/**
+	 * 上传某个目录下的所有文件，包括目录嵌套的上传能力
+	 * 
+	 * @param ip
+	 * @param port
+	 * @param ftpUser
+	 * @param ftpPwd
+	 * @param ftpDir
+	 * @param localDirOrFile
+	 */
+	public static void uploadNested(FtpThread ftpthread, String ip, int port, String ftpUser, String ftpPwd,
+			String ftpDir, String localDirOrFile) throws Exception
+	{
+		FTPClient ftp = null;
+		try
+		{
+			File local = new File(localDirOrFile);
+			ftp = connect((ftpthread != null ? ftpthread.getFtpServer().getName() : ip), ip, port, ftpUser, ftpPwd);
+			uploadNested(ftpthread, ftp, ftpDir, local.getCanonicalPath().replaceAll("\\\\", "/"), local);
+		}
+		// ！！不进行错误捕获，直接抛出，由ftp超时监控线程处理！！
+		finally
+		{
+			try
+			{
+				if (ftp != null)
+					ftp.disconnect();
+			} catch (Exception e)
+			{
+			}
+		}
+	}
+
+	private static void uploadNested(FtpThread ftpthread, FTPClient ftp, String ftpDir, String localDir, File file)
+			throws Exception
+	{
+		if (file.isDirectory())
+		{
+			File[] files = file.listFiles();
+			if (files != null)
+			{
+				for (int i = 0; i < files.length; i++)
+				{
+					File f = files[i];
+					if (f.isDirectory())
+					{
+						uploadNested(ftpthread, ftp, ftpDir, localDir, f);
+					} else
+					{
+						uploadOnce(ftpthread, ftp, ftpDir, localDir, f);
+					}
+				}
+			}
+		} else
+		{
+			uploadOnce(ftpthread, ftp, ftpDir, localDir, file);
+		}
+	}
+
+	private static void uploadOnce(FtpThread ftpthread, FTPClient ftp, String ftpDir, String localDir, File file)
+			throws Exception
+	{
+		FileInputStream is = null;
+		try
+		{
+			// 判断文件是否是最近n秒内生成的文件，默认只检索最近1个小时生成的文件
+			long fileLastMofidyTime = 0;// 单位 秒
+			try
+			{
+				fileLastMofidyTime = Long.parseLong(ConfigReader.getProperties("ftp.fileLastModifyTime"));
+				log.debug("SystemConfig.xml配置的FTP上传最近多长时间内生成的文件(ftp.fileLastModifyTime):" + fileLastMofidyTime);
+			} catch (Exception e)
+			{
+				log.info("SystemConfig.xml未配置FTP上传最近多长时间内生成的文件(ftp.fileLastModifyTime),系统采用默认设置:"
+						+ Constant.FTP_FILELASTMODIFYTIME_DEFAULT_VALUE);
+				fileLastMofidyTime = Constant.FTP_FILELASTMODIFYTIME_DEFAULT_VALUE;
+			}
+
+			// 判断文件的生成时间是否在采集要求的范围内。
+			long timeNow = System.currentTimeMillis();
+
+			if (timeNow - file.lastModified() > fileLastMofidyTime * 1000l)
+			{
+				log.debug(file.getCanonicalPath() + "生成已超过:" + fileLastMofidyTime + "秒，不再上传。");
+				return;
+			}
+			if (timeNow - file.lastModified() < 20 * 1000l)
+			{
+				log.debug(file.getCanonicalPath() + "生成不足:" + 20 + "秒，暂不上传。");
+				return;
+			}
+
+			// 已上传过不再重复上传
+			if (!FilterUtil.shouldUpload(file))
+			{
+				log.debug("文件已上传过，不再重复上传：" + file.getCanonicalPath());
+				return;
+			}
+
+			File sourceFile = file;
+			String srcParentpathRelative = file.getParentFile().getCanonicalPath().replaceAll("\\\\", "/").replaceAll(
+					localDir, "");
+
+			String destFileName = sourceFile.getName();
+			String destParentPath = ftpDir + srcParentpathRelative;
+
+			String tempDestFileName = destFileName + ".tmp";
+
+			// 建目录
+			ftp.changeWorkingDirectory(ftpDir);
+			String[] dirs = srcParentpathRelative.split("/");
+			for (int i = 0; i < dirs.length; i++)
+			{
+				String dir = dirs[i];
+				ftp.makeDirectory(dir);
+				ftp.changeWorkingDirectory(dir);
+			}
+
+			ftp.changeWorkingDirectory(destParentPath);
+
+			// 存储文件到ftp的/ftpDir目录中,上传过程中使用文件名+.tmp后缀作标记。
+			log.info("文件上传开始：" + file.getCanonicalPath());
+			is = new FileInputStream(sourceFile);
+			ftp.storeFile(tempDestFileName, is);
+
+			// 上传完成后改回原名
+			ftp.rename(tempDestFileName, destFileName);
+
+			// 记录已上传的文件
+			FilterUtil.recordUploadedFile(file);
+
+			// 设置FTP线程的最新活动时间
+			if (ftpthread != null)
+			{
+				ftpthread.setStartTime(new Date());
+			}
+
+			log.info("文件上传完成：" + file.getCanonicalPath());
+		} finally
+		{
+			if (is != null)
+			{
+				is.close();
+			}
+		}
+	}
+
+	/**
+	 * 连接到ftp服务器
+	 * 
+	 * @param ip
+	 * @param port
+	 * @param ftpUser
+	 * @param ftpPwd
+	 * @return
+	 */
+	public static FTPClient connect(String ftpServerName, String ip, int port, String ftpUser, String ftpPwd)
+			throws Exception
+	{
+		try
+		{
+			// 日志格式：#FTP服务器连接#-[开始]-[FTP服务器=xx]
+			log.info("#FTP服务器连接#-[开始]-[FTP服务器=" + ftpServerName + "]");
+
+			FTPClient ftp = new FTPClient();
+
+			ftp.connect(ip, port);
+			ftp.login(ftpUser, ftpPwd);
+
+			// ftp.setFileType(FTP.ASCII_FILE_TYPE); // ASCII_FILE_TYPE格式传送文件
+
+			ftp.setFileType(FTP.BINARY_FILE_TYPE);// BINARY_FILE_TYPE格式传送文件
+
+			// modify by wuyg 2014-3-21
+			setFtpMode(ftp);
+
+			// 日志格式：#FTP服务器连接#-[结束]-[FTP服务器=xx]
+			log.info("#FTP服务器连接#-[结束]-[FTP服务器=" + ftpServerName + "]");
+
+			return ftp;
+		} catch (Exception e)
+		{
+			// 日志格式：#FTP服务器连接#-[出错]-[FTP服务器=xx]-[错误信息=ee]
+			log.error("#FTP服务器连接#-[出错]-[FTP服务器=" + ftpServerName + "]-[错误信息=" + e.getMessage() + "]");
+			throw e;
+		}
+	}
+
+	private static void setFtpMode(FTPClient ftp) throws Exception
+	{
+		// modify by wuyg 2014-3-21。设置FTP模式，主动模式或被动模式，一般默认采用被动模式
+		String ftpMode = ConfigReader.getProperties("ftp.mode");
+		if (StringUtil.isEmpty(ftpMode))
+		{
+			ftpMode = Constant.FTP_MODE_PASV;// 默认为被动模式
+
+			log.info("SystemConfig.xml中没有配置ftp的模式(ftp.mode),默认采用:" + ftpMode);
+		}
+
+		if (Constant.FTP_MODE_PASV.equalsIgnoreCase(ftpMode))
+		{
+			/**
+			 * FTPClient.listFiles()或者FTPClient.retrieveFile()方法时，就停止在那里，什么反应都没有 ， 出现假死状态。在调用这两个方法之前， 调用FTPClient.
+			 * enterLocalPassiveMode();这个方法的意思就是每次数据连接之前，ftp client告诉ftp server开通一个端口来传输数据。为什么要这样做呢，因为ftp
+			 * server可能每次开启不同的端口来传输数据 ，但是在linux上，由于安全限制，可能某些端口没有开启，所以就出现阻塞。OK，问题解决。
+			 */
+			ftp.enterLocalPassiveMode();
+			log.info("FTP采用PASV被动模式");
+		} else if (Constant.FTP_MODE_PORT.equalsIgnoreCase(ftpMode))
+		{
+			ftp.enterLocalActiveMode();
+			log.info("FTP采用PORT主动模式,本地地址：" + ftp.getLocalAddress().getHostAddress() + "");
+			// ftp.setActivePortRange(10000, 60000);
+		}
+	}
+
+	private static Calendar getFtpTimeNow(String ftpServerName, FTPClient ftp, String ftpdir) throws Exception
+	{
+		Calendar ftpTimeNow = null;
+		FileInputStream checkTimeFileInput = null;
+		try
+		{
+			// 上传一个新文件
+			File f = new File(Constant.DATA_DIR, "inspur_check_time.txt");
+			if (!f.getParentFile().exists())
+			{
+				f.mkdirs();
+			}
+			if (!f.exists())
+			{
+				f.createNewFile();
+			}
+			if (f.length() == 0)
+			{
+				PrintWriter pw = new PrintWriter(f);
+				pw.println("get the ftp server time");
+				pw.close();
+			}
+
+			checkTimeFileInput = new FileInputStream(f);
+			boolean isStoreFile = ftp.storeFile(f.getName(), checkTimeFileInput);
+
+			// 获取这个新文件的时间作为ftp服务器的当前时间
+			FTPFile[] fs = ftp.listFiles(f.getName());
+			if (isStoreFile && fs != null && fs.length > 0)
+			{
+				FTPFile fu = fs[0];
+				ftpTimeNow = fu.getTimestamp();
+				if (ftpTimeNow != null)
+				{
+					log.info("[FTP服务器=" + ftpServerName + ",FTP服务器当前时间=" + TimeUtil.date2str(ftpTimeNow.getTime())
+							+ ",采集服务器当前时间=" + TimeUtil.nowTime2str() + ",FTP服务器时间-采集服务器时间="
+							+ (ftpTimeNow.getTimeInMillis() - new Date().getTime()) + "毫秒]");
+				}
+			} else
+			{
+				log.error("[FTP服务器=" + ftpServerName + ",获取FTP服务器当前时间失败，请检查该服务器FTP服务是否有上传和删除权限！！]");
+				throw new Exception("[FTP服务器=" + ftpServerName + ",获取FTP服务器当前时间失败，请检查该服务器FTP服务是否有上传和删除权限！！]");
+			}
+
+			return ftpTimeNow;
+		} catch (Exception e)
+		{
+			// modify by wuyg 2013-5-9 ,获取ftpTimeNow出错时不再抛出异常，内部消化。
+			log.error(e.getMessage(), e);
+			return null;
+		} finally
+		{
+			if (checkTimeFileInput != null)
+			{
+				checkTimeFileInput.close();
+			}
+		}
+	}
+
+	public static void main(String[] args)
+	{
+		System.out.println(TimeUtil.nowTime2str());
+		try
+		{
+			// downloadNested(null, "10.18.1.26", 21, "nwom", "nwom123", "/home/nwom/user/wuyg", "c:/upload");
+
+			FtpServer ftpServer = new FtpServer();
+			ftpServer.setDelete(true);
+			downloadNested(new FtpThread(ftpServer, 0, 3600, null), "127.0.0.1", 21, "lexftp", "lexftp", "/",
+					"d:/test1", null, 3600000, false);
+
+		} catch (Exception ex)
+		{
+			ex.printStackTrace();
+		}
+		System.out.println(TimeUtil.nowTime2str());
+	}
+
+}

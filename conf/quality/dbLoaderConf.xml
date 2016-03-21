@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="GBK"?>
+<dbLoader>
+	<user>PM</user>
+	<password>PM</password>
+	<tnsname>INSPUR_NWOM</tnsname>
+	<port></port>
+	<ip></ip>
+<dbLoader>

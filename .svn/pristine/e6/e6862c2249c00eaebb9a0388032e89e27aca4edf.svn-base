@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="gb2312"?>
+<!--
+创建人：武玉刚
+创建时间：2012-3-6
+版本：V1.0
+用途：该配置文件用来对TD华为MR的解析入库程序进行参数配置。
+说明：项目现场需要修改dbuserid参数，其他标记为“高级”的参数一般不需要修改。
+-->
+<Config>
+	<!-- FTP文件下载相关参数 -->
+	<ftp>
+		<!-- 高级：ftp采集轮询间隔时间,单位秒 ,默认60秒-->
+		<scanInterval>60</scanInterval>
+		<!-- 高级：ftp采集最近多长时间内生成的文件,单位秒 ，默认1小时-->
+		<fileLastModifyTime>7200</fileLastModifyTime>
+		<!-- 高级：ftp采集线程超时时间,单位秒 ，默认5分钟-->
+		<timeOut>300</timeOut>
+	</ftp>
+	<!-- 文件解析相关参数 -->
+	<parser>
+		<!-- 高级： 解析线程池最大线程数 ，默认15个-->
+		<threadpool>15</threadpool>
+		<!-- 高级：是否轮询扫描true|false，默认true -->
+		<loopScan>true</loopScan>
+		<!-- 高级：文件解析轮询扫描间隔时间,单位秒，默认30秒 -->
+		<scanInterval>30</scanInterval>
+		<!-- 高级：原始文件保存天数 ，默认3天-->
+		<fileSavedDays>3</fileSavedDays>
+	</parser>
+	<!-- sqlldr入库时所需的信息 -->
+	<sqlldr>
+		<!-- 项目现场需修改：数据入库时SQLLDR所需的dbuserid,使用解析服务器ORACLE客户端tnsnames.ora中的配置 -->
+		<dbuserid>pm/pm@nwom2</dbuserid>
+		<!-- 高级：入库过程中产生的中间文件保存天数 ，默认1天-->
+		<fileSavedDays>1</fileSavedDays>
+	</sqlldr>
+	<!--项目现场需修改：过程日志入库参数设置，用于实现基于log4j的标准日志入库-->
+	<log>
+		<dbDriverClassName>oracle.jdbc.driver.OracleDriver</dbDriverClassName>
+		<dbUrl>jdbc:oracle:thin:@10.224.141.182:8521:NMSW1</dbUrl>
+		<dbUser>nwom</dbUser>
+		<dbPassword>wxwy-NWOM.1</dbPassword>
+	</log>
+	<!-- 扩展点 -->
+	<extend>
+		<!-- 临时文件清理扩展点 -->
+		<tempFileCleaner>com.inspur.ftpparserframework.extend.DefaultTempFileCleaner</tempFileCleaner>
+		<!-- 文件过滤扩展点 -->
+		<fileFilter>com.inspur.ftpparserframework.extend.DefaultFileFilter</fileFilter>
+		<!-- 基本信息解析扩展点 -->
+		<basicInfoParser>com.inspur.ftpparserframework.extend.DefaultBasicInfoParser</basicInfoParser>
+		<!-- 文件转换器 -->
+		<transformators>com.inspur.ftpparserframework.transformator.DefaultTransformator</transformators>
+	</extend>
+</Config>

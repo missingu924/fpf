@@ -1,0 +1,162 @@
+package com.inspur.ftpparserframework.ftp;
+
+import java.text.ParseException;
+import java.util.Date;
+
+import org.apache.commons.net.ftp.FTPClient;
+import org.apache.log4j.Logger;
+
+import com.inspur.ftpparserframework.ftp.obj.FtpServer;
+import com.inspur.ftpparserframework.util.Constant;
+import com.inspur.ftpparserframework.util.TimeUtil;
+
+/**
+ * FTP运行线程
+ * 
+ * @author 武玉刚
+ * 
+ */
+public class FtpThread extends Thread
+{
+	private Logger log = Logger.getLogger(getClass());
+	private FtpServer ftpServer = null;
+	private long interval;// 单位秒
+	private long fileLastModifyTime;// 单位秒
+	private Date startTime = new Date();
+	private String mode = null;
+	private FTPClient ftp = null;// add by lex 20140519 缓存fpt连接，便于超时监控，发送NOOP命令
+
+	/**
+	 * 构造方法
+	 * 
+	 * @param ftpServer
+	 *            ftp服务器信息
+	 * @param interval
+	 *            ftp轮询间隔，单位秒
+	 * @param fileLastModifyTime
+	 *            ftp采集最近多长时间内生成的文件,单位秒
+	 * @param mode
+	 *            ftp模式，包括(download|upload|redownload，对应为上传 |下载|补采)
+	 */
+	public FtpThread(FtpServer ftpServer, long interval, long fileLastModifyTime, String mode)
+	{
+		this.ftpServer = ftpServer;
+		this.interval = interval;
+		this.fileLastModifyTime = fileLastModifyTime;
+		this.mode = mode;
+		this.setName(ftpServer.getName());// lex 20130823 添加,方便查询ftpServer对应的线程
+	}
+
+	@Override
+	public void run()
+	{
+
+		while (true)
+		{
+			try
+			{
+				this.setStartTime(new Date());// 赋予当前时间，用于检测超时。
+
+				log.info("====================FTP服务器" + ftpServer.getName() + "文件" + mode + "开始====================");
+				log.info("FTP服务器" + ftpServer.getName() + "的基本信息如下：\n" + ftpServer.toString());
+				// 下载
+				if (Constant.FTP_DOWNLOAD.equalsIgnoreCase(mode))
+				{
+					FtpUtil.downloadNested(this, ftpServer.getIp(), ftpServer.getPort(), ftpServer.getUser(), ftpServer
+							.getPassword(), ftpServer.getDir(), ftpServer.getStoredir(), ftpServer.getRealFilter(),
+							fileLastModifyTime, false);
+				}
+				// 上传
+				else if (Constant.FTP_UPLOAD.equalsIgnoreCase(mode))
+				{
+					FtpUtil.uploadNested(this, ftpServer.getIp(), ftpServer.getPort(), ftpServer.getUser(), ftpServer
+							.getPassword(), ftpServer.getDir(), ftpServer.getStoredir());
+				}
+				// 补采
+				else if (Constant.FTP_RE_DOWNLOAD.equalsIgnoreCase(mode))
+				{
+					FtpUtil.downloadNested(this, ftpServer.getIp(), ftpServer.getPort(), ftpServer.getUser(), ftpServer
+							.getPassword(), ftpServer.getDir(), ftpServer.getStoredir(), ftpServer.getRealFilter(),
+							fileLastModifyTime, true);
+				}
+				log.info("====================服务器" + ftpServer.getName() + "文件" + mode + "结束====================");
+
+				// this.setStartTime(new Date((new Date().getTime()) + interval * 1000l));//避免在休眠期间被检测超时重启
+				this.setStartTime(new Date((new Date().getTime())));// modify by lex 20140620，去掉休眠时间，休眠时间过长时应该被检测到并重启才行
+				sleep(interval * 1000l);
+			} catch (Exception e)
+			{
+				log.error(e.getMessage(), e);
+				try
+				{
+					// ftp 报错，则将此ftp线程的开始时间置为1900-1-1，因此ftp超时检查线程会自动重启该ftp线程
+					this.setStartTime(TimeUtil.str2date("1900-1-1 0:0:0"));
+				} catch (ParseException e1)
+				{
+				}
+			}
+		}
+
+	}
+
+	public long getInterval()
+	{
+		return interval;
+	}
+
+	public void setInterval(long interval)
+	{
+		this.interval = interval;
+	}
+
+	public String getMode()
+	{
+		return mode;
+	}
+
+	public void setMode(String mode)
+	{
+		this.mode = mode;
+	}
+
+	public FtpServer getFtpServer()
+	{
+		return ftpServer;
+	}
+
+	public void setFtpServer(FtpServer ftpServer)
+	{
+		this.ftpServer = ftpServer;
+	}
+
+	public Date getStartTime()
+	{
+		return startTime;
+	}
+
+	public void setStartTime(Date startTime)
+	{
+		this.startTime = startTime;
+	}
+
+	public long getFileLastModifyTime()
+	{
+		return fileLastModifyTime;
+	}
+
+	public void setFileLastModifyTime(long fileLastModifyTime)
+	{
+		this.fileLastModifyTime = fileLastModifyTime;
+	}
+
+	public synchronized FTPClient getFtp()
+	{
+		return ftp;
+	}
+
+	public synchronized void setFtp(FTPClient ftp)
+	{
+		this.ftp = ftp;
+	}
+
+}
